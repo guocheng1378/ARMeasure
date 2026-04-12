@@ -246,10 +246,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
 
         // Overflow / invalid check
-        // Some devices report unreliable max range (e.g. Xiaomi returns 1mm)
+        // Some devices report unrealistically small max range (e.g. Xiaomi returns 1000mm=1m)
+        // Use max of device-reported range and 4000mm minimum
         val overflowThresholdMm = tofSensor?.let { sensor ->
-            val maxRange = sensor.maximumRange
-            if (maxRange > 100) maxRange else 4000f // default 4m for VL53L1X
+            maxOf(sensor.maximumRange, 4000f)  // at least 4m
         } ?: 4000f
 
         if (raw <= 0 || raw >= overflowThresholdMm) {
@@ -525,12 +525,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun getDistanceAt(screenX: Float, screenY: Float): Float? {
         // Priority 1: ToF sensor (already filtered by DistanceFilter)
         if (tofDistanceMm > 0) {
-            return tofDistanceMm / 1000f  // mm → m
+            return tofDistanceMm / 10f  // mm → cm
         }
 
         // Priority 2: Camera2 autofocus distance (fallback)
         val dist = currentFocusDistance
-        return if (dist > 0) dist else null
+        return if (dist > 0) dist * 100f else null
     }
 
     /**
@@ -576,7 +576,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         val dist = getDistanceAt(x, y)
         measuredResult = if (dist != null) {
-            String.format("%.2f m", dist)
+            String.format("%.0f cm", dist)
         } else {
             "对焦中..."
         }
@@ -604,7 +604,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val viewH = binding.surfaceView.height.toFloat()
             val dist = compute3DDistance(p1, p2, d1, d2, viewW, viewH)
 
-            measuredResult = String.format("%.2f m", dist)
+            measuredResult = String.format("%.0f cm", dist)
             binding.tvDistance.text = measuredResult
             binding.overlayView.lines = listOf(Pair(p1, p2))
             updateOverlay()
@@ -617,7 +617,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         if (overlayAreaPoints.size >= 3) {
             val area = computeArea(overlayAreaPoints)
-            measuredResult = if (area > 0) String.format("%.2f m²", area) else "无法计算"
+            measuredResult = if (area > 0) String.format("%.0f cm²", area) else "无法计算"
             binding.tvDistance.text = measuredResult
         } else {
             binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
@@ -675,14 +675,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         if (points.size < 3) return 0f
 
         // ToF 传感器只有一个全局深度值，用平均 ToF 距离做平面近似
-        val avgDist = (tofDistanceMm / 1000f).takeIf { it > 0 }
+        val avgDist = (tofDistanceMm / 10f).takeIf { it > 0 }
             ?: currentFocusDistance.takeIf { it > 0 }
             ?: return 0f
 
         val viewW = binding.surfaceView.width.toFloat()
         val hfov = Math.toRadians(getHfovDegrees())
         // 1 像素 = 多少米（在 avgDist 距离上）
-        val viewWidthM = (2 * avgDist * Math.tan(hfov / 2)).toFloat()
+        val viewWidthM = (2 * (avgDist / 100f) * Math.tan(hfov / 2)).toFloat()
         val scale = viewWidthM / viewW
 
         // Shoelace 公式算像素面积 → 乘 scale² 得真实面积
@@ -693,7 +693,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             areaPixels += points[i].x * points[j].y
             areaPixels -= points[j].x * points[i].y
         }
-        return (Math.abs(areaPixels / 2.0) * scale * scale).toFloat()
+        return (Math.abs(areaPixels / 2.0) * scale * scale * 10000.0).toFloat()  // m² → cm²
     }
 
     // ═══════════════════════════════════════════════════════════
