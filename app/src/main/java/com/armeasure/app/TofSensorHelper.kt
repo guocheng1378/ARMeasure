@@ -125,4 +125,13 @@ class TofSensorHelper(
         val cm = tofDistanceMm / 10f
         return if (cm >= minCm) cm else null
     }
+
+    /**
+     * Reset the internal filter state. Call when starting a new measurement.
+     */
+    fun reset() {
+        filter.reset()
+        tofDistanceMm = -1f
+        warmUpCount = 0
+    }
 }
