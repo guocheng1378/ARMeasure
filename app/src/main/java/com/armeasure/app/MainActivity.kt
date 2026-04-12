@@ -718,6 +718,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     // ═══════════════════════════════════════════════════════════
 
     private fun startBackgroundThread() {
+        // Clean up any existing thread first
+        if (backgroundThread?.isAlive == true) {
+            backgroundThread?.quitSafely()
+            try { backgroundThread?.join(1000) } catch (_: Exception) {}
+        }
         backgroundThread = HandlerThread("CameraBG").also { it.start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
     }
@@ -729,10 +734,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun closeCamera() {
         try {
-            cameraOpenCloseLock.acquire()
+            // Use timeout to avoid deadlock if camera callback never arrives
+            cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)
             captureSession?.close(); captureSession = null
             cameraDevice?.close(); cameraDevice = null
         } catch (_: InterruptedException) {
+        } catch (_: Exception) {
         } finally {
             cameraOpenCloseLock.release()
         }
