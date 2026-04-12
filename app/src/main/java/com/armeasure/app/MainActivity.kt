@@ -6,6 +6,10 @@ import android.content.pm.PackageManager
 import android.graphics.*
 import android.graphics.SurfaceTexture
 import android.graphics.SizeF
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.hardware.camera2.*
 import android.hardware.camera2.params.MeteringRectangle
 import android.os.Bundle
@@ -19,18 +23,19 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.armeasure.app.databinding.ActivityMainBinding
+import java.util.Locale
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
 
 /**
- * AR Measure App - using Camera2 autofocus distance + reference calibration.
+ * AR Measure App - Camera2 preview + dToF distance sensor.
  *
- * Since Xiaomi 17 Pro Max doesn't expose dToF via standard Camera2 API,
- * we use LENS_FOCUS_DISTANCE (diopters) to estimate distance.
- * Combined with reference object calibration for better accuracy.
+ * Distance source priority:
+ *   1. ToF sensor (SensorManager) — Xiaomi custom VL53L1X dToF, mm precision
+ *   2. Camera2 LENS_FOCUS_DISTANCE — autofocus fallback, less accurate
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private lateinit var binding: ActivityMainBinding
 
@@ -42,12 +47,34 @@ class MainActivity : AppCompatActivity() {
     private var backgroundThread: HandlerThread? = null
     private val cameraOpenCloseLock = Semaphore(1)
 
-    // Focus distance (meters) - updated continuously
+    // Focus distance (meters) - updated continuously, used as fallback
     @Volatile private var currentFocusDistance: Float = -1f
 
     // Camera intrinsics for FOV calculation
     private var sensorSize: SizeF? = null
     private var focalLengthMm: Float = 0f
+
+    // ═══════════════════════════════════════════════════════════
+    // ToF Sensor (from tof-ranger approach)
+    // ═══════════════════════════════════════════════════════════
+
+    // Xiaomi custom ToF sensor types (non-AOSP, defined by MIUI/HyperOS)
+    private val KNOWN_TOF_TYPES = intArrayOf(33171040, 33171041, 65570, 65572)
+
+    private lateinit var sensorManager: SensorManager
+    private var tofSensor: Sensor? = null
+    private var detectedTofType: Int = 0
+
+    // ToF distance in mm (filtered), -1 = unavailable
+    @Volatile private var tofDistanceMm: Float = -1f
+
+    // ToF signal processing
+    private val tofFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 0f, maxRangeMm = 0f)
+    private var tofWarmUpCount = 0
+    private val TOF_WARM_UP_SAMPLES = 3
+
+    // Whether we found a real ToF sensor (not just proximity fallback)
+    private var hasRealTof = false
 
     // Measurement state
     private enum class Mode { POINT, LINE, AREA }
@@ -82,6 +109,10 @@ class MainActivity : AppCompatActivity() {
         cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         binding.overlayView.onTap = { x, y -> onScreenTapped(x, y) }
 
+        // Initialize ToF sensor detection
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        findTofSensor()
+
         setupUI()
 
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -104,12 +135,118 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         startBackgroundThread()
+        // Register ToF sensor listener
+        tofSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
     }
 
     override fun onPause() {
+        // Unregister all sensor listeners
+        sensorManager.unregisterListener(this)
         closeCamera()
         stopBackgroundThread()
         super.onPause()
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ToF Sensor Detection (from tof-ranger)
+    // ═══════════════════════════════════════════════════════════
+
+    private fun findTofSensor() {
+        val allSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
+        tofSensor = null
+        var sensorLabel = "未找到"
+
+        // Round 1: Match by known Xiaomi custom type values
+        for (tofType in KNOWN_TOF_TYPES) {
+            for (s in allSensors) {
+                if (s.type == tofType) {
+                    tofSensor = s
+                    detectedTofType = tofType
+                    sensorLabel = "${s.name} (type=$tofType)"
+                    hasRealTof = true
+                    break
+                }
+            }
+            if (tofSensor != null) break
+        }
+
+        // Round 2: Fuzzy match by name (non-standard types only)
+        if (tofSensor == null) {
+            for (s in allSensors) {
+                val name = s.name.lowercase(Locale.ROOT)
+                val type = s.type
+                // Skip standard sensor types (<65536)
+                if (type < 65536) continue
+                if (name.contains("tof") || name.contains("vl53") || name.contains("d-tof")
+                    || name.contains("dtof") || name.contains("range")) {
+                    tofSensor = s
+                    detectedTofType = type
+                    sensorLabel = "${s.name} (type=$type 匹配)"
+                    hasRealTof = true
+                    break
+                }
+            }
+        }
+
+        // Round 3: Fallback to proximity sensor
+        if (tofSensor == null) {
+            tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+            if (tofSensor != null) {
+                sensorLabel = "${tofSensor!!.name} (Proximity降级)"
+                hasRealTof = false
+            }
+        }
+
+        // Update UI
+        val statusPrefix = if (hasRealTof) "📐 " else "⚠️ "
+        binding.tvSensor.text = "$statusPrefix$sensorLabel"
+
+        Log.d(TAG, "ToF sensor: $sensorLabel (hasRealTof=$hasRealTof)")
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // SensorEventListener — ToF readings
+    // ═══════════════════════════════════════════════════════════
+
+    override fun onSensorChanged(event: SensorEvent) {
+        val type = event.sensor.type
+
+        // Only process ToF / proximity events
+        val isTofEvent = (detectedTofType > 0 && type == detectedTofType)
+                || type == Sensor.TYPE_PROXIMITY
+        if (!isTofEvent) return
+
+        val raw = event.values[0]
+
+        // Warm-up: skip first few unstable samples
+        if (tofWarmUpCount < TOF_WARM_UP_SAMPLES) {
+            tofWarmUpCount++
+            return
+        }
+
+        // Overflow / invalid check
+        // Some devices report unreliable max range (e.g. Xiaomi returns 1mm)
+        val overflowThresholdMm = tofSensor?.let { sensor ->
+            val maxRange = sensor.maximumRange
+            if (maxRange > 100) maxRange else 4000f // default 4m for VL53L1X
+        } ?: 4000f
+
+        if (raw <= 0 || raw >= overflowThresholdMm) {
+            // Out of range — don't update
+            return
+        }
+
+        // Apply filter pipeline: spike rejection → median → EMA
+        val filtered = tofFilter.filter(raw)
+        if (filtered > 0) {
+            tofDistanceMm = filtered
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        // Not needed
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -171,7 +308,11 @@ class MainActivity : AppCompatActivity() {
             override fun onOpened(camera: CameraDevice) {
                 cameraOpenCloseLock.release()
                 cameraDevice = camera
-                binding.tvSensor.text = "📷 自动对焦测距"
+                // Update sensor label with ToF status
+                val tofStatus = if (hasRealTof) "✅ ToF" else "📷 AF估算"
+                runOnUiThread {
+                    binding.tvSensor.text = tofStatus
+                }
                 createPreviewSession(camera)
             }
             override fun onDisconnected(camera: CameraDevice) {
@@ -237,7 +378,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Capture callback - reads focus distance from each frame.
+     * Capture callback - reads focus distance from each frame (used as fallback).
      */
     private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
@@ -322,15 +463,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // Distance estimation
+    // Distance estimation — ToF first, AF fallback
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * Get distance at screen point.
-     * Primary: tap-to-focus → read LENS_FOCUS_DISTANCE
-     * Fallback: continuous AF distance
+     * Get distance in meters.
+     * Priority: ToF sensor (mm precision) → Camera2 AF distance (rough estimate)
      */
     private fun getDistanceAt(screenX: Float, screenY: Float): Float? {
+        // Priority 1: ToF sensor reading (filtered)
+        if (tofDistanceMm > 0) {
+            return tofDistanceMm / 1000f  // mm → m
+        }
+
+        // Priority 2: Camera2 autofocus distance (fallback)
         val dist = currentFocusDistance
         return if (dist > 0) dist else null
     }
@@ -586,6 +732,9 @@ class MainActivity : AppCompatActivity() {
             cameraOpenCloseLock.acquire()
             captureSession?.close(); captureSession = null
             cameraDevice?.close(); cameraDevice = null
-        } catch (_: InterruptedException) {} finally { cameraOpenCloseLock.release() }
+        } catch (_: InterruptedException) {
+        } finally {
+            cameraOpenCloseLock.release()
+        }
     }
 }
