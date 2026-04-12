@@ -69,7 +69,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     @Volatile private var tofDistanceMm: Float = -1f
 
     // ToF signal processing
-    private val tofFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 0f, maxRangeMm = 0f)
+    private val tofFilter = DistanceFilter(windowSize = 3, alpha = 0.6f, maxJumpMm = 1500f, maxRangeMm = 4000f)
     private var tofWarmUpCount = 0
     private val TOF_WARM_UP_SAMPLES = 3
 
@@ -522,10 +522,27 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
      * Get distance in meters.
      * Priority: ToF sensor (mm precision) → Camera2 AF distance (rough estimate)
      */
+    // Buffer of recent ToF readings for tap-time averaging
+    private val recentTofReadings = mutableListOf<Float>()
+    private val TOF_AVERAGE_WINDOW = 7
+
     private fun getDistanceAt(screenX: Float, screenY: Float): Float? {
-        // Priority 1: ToF sensor reading (filtered)
+        // Priority 1: ToF sensor — collect multiple samples for accuracy
         if (tofDistanceMm > 0) {
-            return tofDistanceMm / 1000f  // mm → m
+            val distM = tofDistanceMm / 1000f
+
+            // Collect samples over ~100ms for tap-time averaging
+            recentTofReadings.add(distM)
+            if (recentTofReadings.size > TOF_AVERAGE_WINDOW) {
+                recentTofReadings.removeAt(0)
+            }
+
+            // Use median of recent readings (robust against outliers)
+            if (recentTofReadings.size >= 3) {
+                val sorted = recentTofReadings.sorted()
+                return sorted[sorted.size / 2]
+            }
+            return distM
         }
 
         // Priority 2: Camera2 autofocus distance (fallback)
@@ -647,11 +664,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         d1: Float, d2: Float,
         viewW: Float, viewH: Float
     ): Float {
+        // Normalize to [-1, 1], where (0,0) = screen center
         val nx1 = (p1.x / viewW - 0.5f) * 2f
         val ny1 = (0.5f - p1.y / viewH) * 2f
         val nx2 = (p2.x / viewW - 0.5f) * 2f
         val ny2 = (0.5f - p2.y / viewH) * 2f
 
+        // FOV: full angle from left edge to right edge
+        // Normalized coord * 1.0 = edge → angle = FOV/2 from center
+        // So: angle = nx * FOV/2, and x = d * tan(angle)
         val hfov = Math.toRadians(getHfovDegrees())
         val vfov = Math.toRadians(getVfovDegrees())
 
@@ -670,22 +691,47 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun computeArea(points: List<PointF>): Float {
         if (points.size < 3) return 0f
 
-        // Average focus distance
-        val avgDist = currentFocusDistance.takeIf { it > 0 } ?: return 0f
-
         val viewW = binding.surfaceView.width.toFloat()
+        val viewH = binding.surfaceView.height.toFloat()
         val hfov = Math.toRadians(getHfovDegrees())
-        val viewWidthM = (2 * avgDist * Math.tan(hfov / 2)).toFloat()
-        val scale = viewWidthM / viewW
+        val vfov = Math.toRadians(getVfovDegrees())
 
-        var areaPixels = 0.0
-        val n = points.size
+        // Convert each screen point to 3D world coordinates using its own depth
+        val worldPoints = points.map { p ->
+            val depth = getDistanceAt(p.x, p.y) ?: return 0f
+            val nx = (p.x / viewW - 0.5f) * 2f
+            val ny = (0.5f - p.y / viewH) * 2f
+            val wx = depth * Math.tan(nx * hfov / 2).toFloat()
+            val wy = depth * Math.tan(ny * vfov / 2).toFloat()
+            Triple(wx, wy, depth)
+        }
+
+        // Compute 3D polygon area using cross product method
+        // Project onto best-fit plane or use triangulation from centroid
+        val n = worldPoints.size
+        // Centroid
+        var cx = 0f; var cy = 0f; var cz = 0f
+        for (p in worldPoints) { cx += p.first; cy += p.second; cz += p.third }
+        cx /= n; cy /= n; cz /= n
+
+        // Sum triangle areas from centroid
+        var area = 0.0
         for (i in 0 until n) {
             val j = (i + 1) % n
-            areaPixels += points[i].x * points[j].y
-            areaPixels -= points[j].x * points[i].y
+            // Two vectors from centroid
+            val v1x = worldPoints[i].first - cx
+            val v1y = worldPoints[i].second - cy
+            val v1z = worldPoints[i].third - cz
+            val v2x = worldPoints[j].first - cx
+            val v2y = worldPoints[j].second - cy
+            val v2z = worldPoints[j].third - cz
+            // Cross product magnitude = area of parallelogram
+            val cpx = v1y * v2z - v1z * v2y
+            val cpy = v1z * v2x - v1x * v2z
+            val cpz = v1x * v2y - v1y * v2x
+            area += Math.sqrt((cpx * cpx + cpy * cpy + cpz * cpz).toDouble())
         }
-        return (Math.abs(areaPixels / 2.0) * scale * scale).toFloat()
+        return (area / 2.0).toFloat()
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -736,6 +782,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         overlayAreaPoints.clear()
         firstPoint = null
         measuredResult = "--"
+        recentTofReadings.clear()
         binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList()
         binding.overlayView.lines = emptyList()

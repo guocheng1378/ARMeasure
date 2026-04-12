@@ -27,16 +27,17 @@ class DistanceFilter(
      * Feed a raw distance reading (mm). Returns filtered distance in mm, or -1 if rejected.
      */
     fun filter(rawMm: Float): Float {
-        if (rawMm < 0) return if (emaInitialized) ema else -1f
+        if (rawMm <= 0) return if (emaInitialized) ema else -1f
 
         // Range check
         if (maxRangeMm > 0 && rawMm >= maxRangeMm) {
             return if (emaInitialized) ema else -1f
         }
 
-        // Spike rejection
+        // Spike rejection — reject sudden jumps > threshold
         if (lastRaw > 0 && maxJumpMm > 0) {
             if (Math.abs(rawMm - lastRaw) > maxJumpMm) {
+                // Spike detected: keep previous filtered value
                 return if (emaInitialized) ema else lastRaw
             }
         }
