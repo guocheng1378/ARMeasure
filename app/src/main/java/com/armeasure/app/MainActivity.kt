@@ -37,7 +37,7 @@ import kotlin.math.sqrt
  *   2. ToF sensor (SensorManager) — single-point distance (center only)
  *   3. Camera2 LENS_FOCUS_DISTANCE — autofocus fallback
  */
-class MainActivity : AppCompatActivity(), SensorEventListener {
+class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Callback {
 
     private lateinit var binding: ActivityMainBinding
 
@@ -100,9 +100,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var scaleFactor = 1f
     private var isCalibrating = false
 
+    // Depth stream state for AF session resume
+    private var depthStreamActive = false
+
     companion object {
         private const val TAG = "ARMeasure"
         private const val REQUEST_CAMERA = 100
+        private const val TOF_MIN_CM = 15f  // ignore ToF readings below 15cm
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -125,6 +129,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         binding.overlayView.onTap = { x, y -> onScreenTapped(x, y) }
+        binding.surfaceView.holder.addCallback(this)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         findTofSensor()
@@ -339,7 +344,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     openDepthCamera(depthId)
                 }
 
-                setupPreviewSession(camera, depthId == rgbId)
+                // Only setup preview if surface is ready (width > 0 means layout happened)
+                val surfaceView = binding.surfaceView
+                if (surfaceView.width > 0 && surfaceView.holder.surface.isValid) {
+                    setupPreviewSession(camera, depthId == rgbId)
+                } else {
+                    Log.d(TAG, "Surface not ready yet, waiting for surfaceCreated callback")
+                }
             }
 
             override fun onDisconnected(camera: CameraDevice) {
@@ -394,6 +405,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         try {
             val surfaceView = binding.surfaceView
             val holder = surfaceView.holder
+            depthStreamActive = sameCameraHasDepth
             val previewSurface = holder.surface
 
             val chars = cameraManager!!.getCameraCharacteristics(camera.id)
@@ -430,8 +442,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
             // Continuous autofocus
             requestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            requestBuilder.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
-                CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON)
 
             camera.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
@@ -638,7 +648,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         // 2. ToF sensor — center only, no spatial mapping
         if (tofDistanceMm > 0) {
-            return tofDistanceMm / 10f  // mm -> cm
+            val tofCm = tofDistanceMm / 10f  // mm -> cm
+            if (tofCm >= TOF_MIN_CM) return tofCm
         }
 
         // 3. AF distance fallback
@@ -708,8 +719,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     if (focusDiopters != null && focusDiopters > 0) {
                         currentFocusDistance = 1f / focusDiopters * scaleFactor
                     }
-                    // Resume continuous AF (only if depth reader not on same session)
-                    if (!hasDepthMap) {
+                    // Resume continuous AF (only if no depth stream on same session)
+                    if (!depthStreamActive) {
                         try {
                             val resume = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                             resume.addTarget(binding.surfaceView.holder.surface)
@@ -742,7 +753,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         overlayPoints.add(PointF(x, y))
 
         val dist = getDistanceAt(x, y)
-        measuredResult = if (dist != null) String.format("%.0f cm", dist) else "对焦中..."
+        measuredResult = when {
+            dist != null -> String.format("%.0f cm", dist)
+            tofDistanceMm > 0 -> String.format("~%.0f cm (近)", tofDistanceMm / 10f)
+            else -> "对焦中..."
+        }
         binding.tvDistance.text = measuredResult
         updateOverlay()
     }
@@ -976,6 +991,28 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // SurfaceHolder.Callback — handle preview surface lifecycle
+    // ═══════════════════════════════════════════════════════════
+
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        Log.d(TAG, "Surface created")
+        if (cameraDevice == null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            startCamera()
+        } else if (cameraDevice != null) {
+            setupPreviewSession(cameraDevice!!, depthStreamActive)
+        }
+    }
+
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        Log.d(TAG, "Surface changed: ${width}x${height}")
+    }
+
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        Log.d(TAG, "Surface destroyed")
+    }
+
 
     // ═══════════════════════════════════════════════════════════
     // Helpers
