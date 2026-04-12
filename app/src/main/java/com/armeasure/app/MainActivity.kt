@@ -532,24 +532,25 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         try {
             val plane = image.planes[0]
             val buffer = plane.buffer
-            val rowStride = plane.rowStride / 2  // shorts per row
-            val pixelStride = plane.pixelStride / 2
+            val rowStrideBytes = plane.rowStride
+            val pixelStrideBytes = plane.pixelStride
             val w = image.width
             val h = image.height
 
             val buf = ShortArray(w * h)
             for (row in 0 until h) {
-                val rowStart = row * rowStride
+                val rowStart = row * rowStrideBytes
                 for (col in 0 until w) {
-                    val idx = rowStart + col * pixelStride
-                    if (idx < buffer.remaining()) {
-                        buf[row * w + col] = buffer.getShort(idx * 2)
+                    val byteIdx = rowStart + col * pixelStrideBytes
+                    if (byteIdx + 1 < buffer.capacity()) {
+                        buf[row * w + col] = buffer.getShort(byteIdx)
                     }
                 }
             }
             depthBuffer = buf
             depthWidth = w
             depthHeight = h
+            Log.d(TAG, "Depth buffer updated: ${w}x${h}, rowStride=$rowStrideBytes, pixelStride=$pixelStrideBytes")
         } catch (e: Exception) {
             Log.e(TAG, "processDepthImage error", e)
         } finally {
