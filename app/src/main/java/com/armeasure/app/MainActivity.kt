@@ -381,6 +381,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val previewSurface = Surface(texture)
 
             // Apply transform to maintain aspect ratio (crop-to-fill, no stretch)
+            textureView.setTransform(Matrix()) // clear stale transform
             textureView.post { applyTextureTransform(textureView, previewSize) }
 
             val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
@@ -519,20 +520,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val bufH = previewSize.height.toFloat()
             if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return
 
-            val matrix = android.graphics.Matrix()
+            val matrix = Matrix()
 
-            val scaleX = viewW / bufH
-            val scaleY = viewH / bufW
-            val scale = maxOf(scaleX, scaleY)
+            // After 90° rotation: rotated width = bufH, rotated height = bufW
+            val rotatedW = bufH
+            val rotatedH = bufW
 
-            val scaledW = bufH * scale
-            val scaledH = bufW * scale
-            val tx = (viewW - scaledW) / 2f
-            val ty = (viewH - scaledH) / 2f
+            // Crop-to-fill: scale so rotated frame covers the entire view
+            val scale = maxOf(viewW / rotatedW, viewH / rotatedH)
 
-            matrix.postScale(scale, scale, bufH / 2f, bufW / 2f)
-            matrix.postRotate(90f, bufH / 2f, bufW / 2f)
-            matrix.postTranslate(tx, ty)
+            // Scale and rotate around the rotated-frame center
+            matrix.postScale(scale, scale, rotatedW / 2f, rotatedH / 2f)
+            matrix.postRotate(90f, rotatedW / 2f, rotatedH / 2f)
+
+            // Center the result in the view
+            val finalW = rotatedW * scale
+            val finalH = rotatedH * scale
+            matrix.postTranslate((viewW - finalW) / 2f, (viewH - finalH) / 2f)
 
             textureView.setTransform(matrix)
         } catch (e: Exception) {
