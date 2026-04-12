@@ -100,7 +100,8 @@
                 android:layout_height="48dp"
                 android:layout_weight="1"
                 android:layout_marginEnd="4dp"
-                android:text="单点" />
+                android:text="单点"
+                android:textSize="12sp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnLineMode"
@@ -109,7 +110,8 @@
                 android:layout_height="48dp"
                 android:layout_weight="1"
                 android:layout_marginHorizontal="4dp"
-                android:text="两点" />
+                android:text="两点"
+                android:textSize="12sp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnAreaMode"
@@ -117,8 +119,19 @@
                 android:layout_width="0dp"
                 android:layout_height="48dp"
                 android:layout_weight="1"
+                android:layout_marginHorizontal="4dp"
+                android:text="面积"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSweepMode"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
                 android:layout_marginStart="4dp"
-                android:text="面积" />
+                android:text="扫掠"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <!-- Action buttons -->

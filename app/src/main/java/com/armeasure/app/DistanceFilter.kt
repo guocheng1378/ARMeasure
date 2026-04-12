@@ -1,86 +1,79 @@
 package com.armeasure.app
 
-import java.util.Arrays
-
 /**
  * Multi-stage signal processing for dToF distance data.
- * Pipeline: raw → spike reject → median → EMA → output
+ * Pipeline: raw → spike reject → median → Kalman → output
  *
- * Ported from tof-ranger (DistanceFilter.java) to Kotlin.
+ * Replaces fixed-alpha EMA with adaptive 1st-order Kalman filter.
+ * Constructor signature kept backward-compatible with `alpha` param.
  */
 class DistanceFilter(
     private val windowSize: Int = 5,
-    private val alpha: Float = 0.4f,
+    @Suppress("unused") private val alpha: Float = 0.4f, // legacy, not used by Kalman
     private val maxJumpMm: Float = 0f,
-    private val maxRangeMm: Float = 0f
+    private val maxRangeMm: Float = 0f,
+    private val processNoise: Float = 50f,
+    private val initMeasureNoise: Float = 400f
 ) {
     private val medianBuffer = FloatArray(windowSize) { -1f }
+    private val sortBuffer = FloatArray(windowSize)
     private var medianPos = 0
     private var medianFilled = false
 
-    private var ema = 0f
-    private var emaInitialized = false
+    private var estimate = 0f
+    private var errorCov = 1f
+    private var kalmanInitialized = false
 
     private var lastRaw = -1f
+    private var tickCount = 0
 
-    /**
-     * Feed a raw distance reading (mm). Returns filtered distance in mm, or -1 if rejected.
-     */
     fun filter(rawMm: Float): Float {
-        if (rawMm <= 0) return if (emaInitialized) ema else -1f
-
-        // Range check
-        if (maxRangeMm > 0 && rawMm >= maxRangeMm) {
-            return if (emaInitialized) ema else -1f
-        }
-
-        // Spike rejection — reject sudden jumps > threshold
-        if (lastRaw > 0 && maxJumpMm > 0) {
-            if (Math.abs(rawMm - lastRaw) > maxJumpMm) {
-                // Spike detected: keep previous filtered value
-                return if (emaInitialized) ema else lastRaw
-            }
+        if (rawMm <= 0) return if (kalmanInitialized) estimate else -1f
+        if (maxRangeMm > 0 && rawMm >= maxRangeMm) return if (kalmanInitialized) estimate else -1f
+        if (lastRaw > 0 && maxJumpMm > 0 && Math.abs(rawMm - lastRaw) > maxJumpMm) {
+            return if (kalmanInitialized) estimate else lastRaw
         }
         lastRaw = rawMm
 
-        // Fill median buffer
         medianBuffer[medianPos] = rawMm
         medianPos = (medianPos + 1) % windowSize
         if (medianPos == 0) medianFilled = true
 
         val count = if (medianFilled) windowSize else medianPos
-        if (count < 2) {
-            return applyEma(rawMm)
-        }
+        if (count < 2) return applyKalman(rawMm)
 
-        // Median filter
-        val sorted = medianBuffer.copyOf(count)
-        sorted.sort()
-        val median = sorted[count / 2]
-
-        return applyEma(median)
+        for (i in 0 until count) sortBuffer[i] = medianBuffer[i]
+        sortBuffer.sort(0, count)
+        return applyKalman(sortBuffer[count / 2])
     }
 
-    private fun applyEma(value: Float): Float {
-        if (!emaInitialized) {
-            ema = value
-            emaInitialized = true
-        } else {
-            ema = alpha * value + (1 - alpha) * ema
+    private fun applyKalman(z: Float): Float {
+        tickCount++
+        if (!kalmanInitialized) {
+            estimate = z
+            errorCov = initMeasureNoise
+            kalmanInitialized = true
+            return estimate
         }
-        return ema
+        val predCov = errorCov + processNoise
+        val innovation = z - estimate
+        val rAdaptive = if (tickCount > windowSize) {
+            val base = initMeasureNoise * 0.5f
+            val dynamic = Math.abs(innovation) * Math.abs(innovation) * 0.01f
+            (base + dynamic).coerceIn(initMeasureNoise * 0.1f, initMeasureNoise * 3f)
+        } else initMeasureNoise
+        val gain = predCov / (predCov + rAdaptive)
+        estimate += gain * innovation
+        errorCov = (1f - gain) * predCov
+        return estimate
     }
 
     fun reset() {
-        medianPos = 0
-        medianFilled = false
-        emaInitialized = false
-        lastRaw = -1f
-        ema = 0f
-        Arrays.fill(medianBuffer, -1f)
+        medianPos = 0; medianFilled = false; kalmanInitialized = false
+        lastRaw = -1f; estimate = 0f; errorCov = 1f; tickCount = 0
+        medianBuffer.fill(-1f)
     }
 
-    fun getCurrentValue(): Float = ema
-
+    fun getCurrentValue(): Float = estimate
     fun isWarmedUp(): Boolean = medianFilled || medianPos >= 2
 }
