@@ -330,19 +330,25 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 val tofStatus = if (hasRealTof) "✅ ToF" else "📷 AF估算"
                 runOnUiThread { binding.tvSensor.text = tofStatus }
 
-                // Wait for TextureView surface to be ready
-                val textureView = binding.textureView
-                if (textureView.isAvailable) {
-                    createPreviewSession(camera)
-                } else {
-                    textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                            createPreviewSession(camera)
+                try {
+                    // Wait for TextureView surface to be ready
+                    val textureView = binding.textureView
+                    if (textureView.isAvailable) {
+                        createPreviewSession(camera)
+                    } else {
+                        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                try { createPreviewSession(camera) } catch (e: Exception) {
+                                    Log.e(TAG, "Preview init failed", e)
+                                }
+                            }
+                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean = true
+                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                         }
-                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
-                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean = true
-                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Camera session setup failed", e)
                 }
             }
             override fun onDisconnected(camera: CameraDevice) {
@@ -360,6 +366,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun createPreviewSession(camera: CameraDevice) {
+        try {
         val textureView = binding.textureView
         val texture = textureView.surfaceTexture ?: return
 
@@ -424,6 +431,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             if (focusDiopters != null && focusDiopters > 0) {
                 currentFocusDistance = 1f / focusDiopters * scaleFactor  // meters
             }
+        }
+        } catch (e: Exception) {
+            Log.e(TAG, "createPreviewSession failed", e)
         }
     }
 
