@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,14 +38,13 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
 
-      - name: Create Release APK
-        if: github.ref == 'refs/heads/main'
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: "ARMeasure v${{ github.run_number }}"
           body: |
-            📱 AR测距 App 自动构建
+            📱 **AR测距 App 自动构建**
             
             ### 功能
             - 单点测距 (dToF 深度值)
