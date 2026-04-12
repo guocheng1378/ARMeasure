@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.*
-import android.graphics.SurfaceTexture
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -18,7 +17,8 @@ import android.util.Log
 import android.util.Size
 import android.util.SizeF
 import android.view.Surface
-import android.view.TextureView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -331,28 +331,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 runOnUiThread { binding.tvSensor.text = tofStatus }
 
                 try {
-                    val textureView = binding.textureView
-                    // Wait for BOTH surface available AND valid layout dimensions
-                    fun tryStartPreview() {
-                        val st = textureView.surfaceTexture ?: return
-                        if (textureView.width <= 0 || textureView.height <= 0) {
-                            textureView.post { tryStartPreview() }
-                            return
-                        }
+                    val surfaceView = binding.surfaceView
+                    val holder = surfaceView.holder
+                    if (holder.surface.isValid && surfaceView.width > 0) {
                         createPreviewSession(camera)
-                    }
-                    if (textureView.isAvailable) {
-                        // Use post to ensure layout pass has completed
-                        textureView.post { tryStartPreview() }
                     } else {
-                        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                textureView.post { tryStartPreview() }
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(h: SurfaceHolder) {
+                                surfaceView.post { createPreviewSession(camera) }
                             }
-                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
-                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean = true
-                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
-                        }
+                            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}
+                            override fun surfaceDestroyed(h: SurfaceHolder) {}
+                        })
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Camera session setup failed", e)
@@ -374,22 +364,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun createPreviewSession(camera: CameraDevice) {
         try {
-            val textureView = binding.textureView
-            val texture = textureView.surfaceTexture ?: return
+            val surfaceView = binding.surfaceView
+            val holder = surfaceView.holder
+            val previewSurface = holder.surface
 
-            // Set buffer size
+            // Set buffer size to match SurfaceView dimensions
             val chars = cameraManager!!.getCameraCharacteristics(camera.id)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val previewSize = chooseOptimalSize(
                 map?.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray(),
-                textureView.width.coerceAtLeast(1), textureView.height.coerceAtLeast(1)
+                surfaceView.width.coerceAtLeast(1), surfaceView.height.coerceAtLeast(1)
             )
-            texture.setDefaultBufferSize(previewSize.width, previewSize.height)
-            val previewSurface = Surface(texture)
-
-            // Apply transform to maintain aspect ratio (crop-to-fill, no stretch)
-            textureView.setTransform(Matrix()) // clear stale transform
-            textureView.post { applyTextureTransform(textureView, previewSize) }
+            holder.setFixedSize(previewSize.width, previewSize.height)
 
             val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             requestBuilder.addTarget(previewSurface)
@@ -452,13 +438,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val session = captureSession ?: return
         val device = cameraDevice ?: return
 
-        val textureView = binding.textureView
+        val surfaceView = binding.surfaceView
         val chars = cameraManager!!.getCameraCharacteristics(device.id)
         val sensorRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
 
         // Map screen coords to sensor coords
-        val scaleX = sensorRect.width().toFloat() / textureView.width
-        val scaleY = sensorRect.height().toFloat() / textureView.height
+        val scaleX = sensorRect.width().toFloat() / surfaceView.width
+        val scaleY = sensorRect.height().toFloat() / surfaceView.height
         val focusX = (screenX * scaleX).toInt().coerceIn(0, sensorRect.width() - 1)
         val focusY = (screenY * scaleY).toInt().coerceIn(0, sensorRect.height() - 1)
 
@@ -474,7 +460,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         try {
             // Trigger AF at tap point
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            request.addTarget(Surface(binding.textureView.surfaceTexture))
+            request.addTarget(binding.surfaceView.holder.surface)
             request.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             request.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(afRegion))
             request.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
@@ -494,7 +480,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     // Return to continuous AF
                     try {
                         val resume = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                        resume.addTarget(Surface(binding.textureView.surfaceTexture))
+                        resume.addTarget(binding.surfaceView.holder.surface)
                         resume.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         session.setRepeatingRequest(resume.build(), captureCallback, backgroundHandler)
                     } catch (_: Exception) {}
@@ -526,44 +512,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         } ?: choices.first()
     }
 
-    /**
-     * Apply transform to TextureView so preview maintains aspect ratio.
-     * Handles camera sensor rotation (landscape → portrait).
-     */
-    private fun applyTextureTransform(textureView: TextureView, previewSize: Size) {
-        try {
-            // Use display size as fallback if view dimensions are 0
-            val viewW = if (textureView.width > 0) textureView.width.toFloat()
-                        else resources.displayMetrics.widthPixels.toFloat()
-            val viewH = if (textureView.height > 0) textureView.height.toFloat()
-                        else resources.displayMetrics.heightPixels.toFloat()
-            val bufW = previewSize.width.toFloat()
-            val bufH = previewSize.height.toFloat()
-            if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return
-
-            val matrix = Matrix()
-
-            // After 90° rotation: rotated width = bufH, rotated height = bufW
-            val rotatedW = bufH
-            val rotatedH = bufW
-
-            // Crop-to-fill: scale so rotated frame covers the entire view
-            val scale = maxOf(viewW / rotatedW, viewH / rotatedH)
-
-            // Scale and rotate around the rotated-frame center
-            matrix.postScale(scale, scale, rotatedW / 2f, rotatedH / 2f)
-            matrix.postRotate(90f, rotatedW / 2f, rotatedH / 2f)
-
-            // Center the result in the view
-            val finalW = rotatedW * scale
-            val finalH = rotatedH * scale
-            matrix.postTranslate((viewW - finalW) / 2f, (viewH - finalH) / 2f)
-
-            textureView.setTransform(matrix)
-        } catch (e: Exception) {
-            Log.e(TAG, "Transform failed", e)
-        }
-    }
+    // SurfaceView handles transform automatically — no Matrix needed
 
     // ═══════════════════════════════════════════════════════════
     // Distance estimation — ToF first, AF fallback
@@ -651,8 +600,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val d1 = firstDistance
             val d2 = getDistanceAt(x, y) ?: d1
 
-            val viewW = binding.textureView.width.toFloat()
-            val viewH = binding.textureView.height.toFloat()
+            val viewW = binding.surfaceView.width.toFloat()
+            val viewH = binding.surfaceView.height.toFloat()
             val dist = compute3DDistance(p1, p2, d1, d2, viewW, viewH)
 
             measuredResult = String.format("%.2f m", dist)
@@ -724,7 +673,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         // Average focus distance
         val avgDist = currentFocusDistance.takeIf { it > 0 } ?: return 0f
 
-        val viewW = binding.textureView.width.toFloat()
+        val viewW = binding.surfaceView.width.toFloat()
         val hfov = Math.toRadians(getHfovDegrees())
         val viewWidthM = (2 * avgDist * Math.tan(hfov / 2)).toFloat()
         val scale = viewWidthM / viewW
@@ -800,17 +749,48 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             return
         }
         try {
+            val surfaceView = binding.surfaceView
             val bitmap = Bitmap.createBitmap(
-                binding.textureView.width, binding.textureView.height, Bitmap.Config.ARGB_8888
+                surfaceView.width, surfaceView.height, Bitmap.Config.ARGB_8888
             )
-            val canvas = Canvas(bitmap)
-            binding.textureView.draw(canvas)
-            binding.overlayView.draw(canvas)
-            android.provider.MediaStore.Images.Media.insertImage(
-                contentResolver, bitmap,
-                "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult"
-            )
-            Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val loc = IntArray(2)
+                surfaceView.getLocationInWindow(loc)
+                android.view.PixelCopy.request(
+                    window,
+                    android.graphics.Rect(loc[0], loc[1], loc[0] + surfaceView.width, loc[1] + surfaceView.height),
+                    bitmap,
+                    { copyResult ->
+                        if (copyResult == android.view.PixelCopy.SUCCESS) {
+                            // Draw overlay on top
+                            val canvas = Canvas(bitmap)
+                            binding.overlayView.draw(canvas)
+                            try {
+                                android.provider.MediaStore.Images.Media.insertImage(
+                                    contentResolver, bitmap,
+                                    "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult"
+                                )
+                                runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() }
+                            } catch (e: Exception) {
+                                runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+                            }
+                        } else {
+                            runOnUiThread { Toast.makeText(this, "截图失败", Toast.LENGTH_SHORT).show() }
+                        }
+                    },
+                    Handler(mainLooper)
+                )
+            } else {
+                // Fallback: capture overlay only
+                val canvas = Canvas(bitmap)
+                canvas.drawColor(Color.BLACK)
+                binding.overlayView.draw(canvas)
+                android.provider.MediaStore.Images.Media.insertImage(
+                    contentResolver, bitmap,
+                    "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult"
+                )
+                Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
+            }
         } catch (e: Exception) {
             Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
