@@ -331,16 +331,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 runOnUiThread { binding.tvSensor.text = tofStatus }
 
                 try {
-                    // Wait for TextureView surface to be ready
                     val textureView = binding.textureView
-                    if (textureView.isAvailable) {
+                    // Wait for BOTH surface available AND valid layout dimensions
+                    fun tryStartPreview() {
+                        val st = textureView.surfaceTexture ?: return
+                        if (textureView.width <= 0 || textureView.height <= 0) {
+                            textureView.post { tryStartPreview() }
+                            return
+                        }
                         createPreviewSession(camera)
+                    }
+                    if (textureView.isAvailable) {
+                        // Use post to ensure layout pass has completed
+                        textureView.post { tryStartPreview() }
                     } else {
                         textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                try { createPreviewSession(camera) } catch (e: Exception) {
-                                    Log.e(TAG, "Preview init failed", e)
-                                }
+                                textureView.post { tryStartPreview() }
                             }
                             override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
                             override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean = true
@@ -500,9 +507,20 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun chooseOptimalSize(choices: Array<Size>, width: Int, height: Int): Size {
         if (choices.isEmpty()) return Size(1920, 1080)
+        // Use display size as fallback if view dimensions are invalid
+        val realW: Int
+        val realH: Int
+        if (width > 1 && height > 1) {
+            realW = width
+            realH = height
+        } else {
+            val dm = resources.displayMetrics
+            realW = dm.widthPixels.coerceAtLeast(1)
+            realH = dm.heightPixels.coerceAtLeast(1)
+        }
         // In portrait, camera buffer is landscape (rotated 90° in transform)
         // So pick size closest to our portrait ratio inverted (h:w → w:h)
-        val targetRatio = height.toFloat() / width  // portrait ratio inverted
+        val targetRatio = realH.toFloat() / realW
         return choices.minByOrNull {
             Math.abs(it.width.toFloat() / it.height - targetRatio)
         } ?: choices.first()
@@ -514,8 +532,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
      */
     private fun applyTextureTransform(textureView: TextureView, previewSize: Size) {
         try {
-            val viewW = textureView.width.toFloat()
-            val viewH = textureView.height.toFloat()
+            // Use display size as fallback if view dimensions are 0
+            val viewW = if (textureView.width > 0) textureView.width.toFloat()
+                        else resources.displayMetrics.widthPixels.toFloat()
+            val viewH = if (textureView.height > 0) textureView.height.toFloat()
+                        else resources.displayMetrics.heightPixels.toFloat()
             val bufW = previewSize.width.toFloat()
             val bufH = previewSize.height.toFloat()
             if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return
