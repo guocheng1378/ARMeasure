@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "ARMeasure"
-include ':app'
+include(":app")
