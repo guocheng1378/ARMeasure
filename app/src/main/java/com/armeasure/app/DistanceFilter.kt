@@ -30,7 +30,11 @@ class DistanceFilter(
     fun filter(rawMm: Float): Float {
         if (rawMm <= 0) return if (kalmanInitialized) estimate else -1f
         if (maxRangeMm > 0 && rawMm >= maxRangeMm) return if (kalmanInitialized) estimate else -1f
-        if (lastRaw > 0 && maxJumpMm > 0 && Math.abs(rawMm - lastRaw) > maxJumpMm) {
+
+        // After reset, skip spike rejection for the first few frames
+        // to allow the filter to re-converge to new measurement distances.
+        val skipSpikeCheck = !kalmanInitialized || tickCount < windowSize
+        if (!skipSpikeCheck && lastRaw > 0 && maxJumpMm > 0 && Math.abs(rawMm - lastRaw) > maxJumpMm) {
             return if (kalmanInitialized) estimate else lastRaw
         }
         lastRaw = rawMm
@@ -59,7 +63,12 @@ class DistanceFilter(
         val innovation = z - estimate
         val rAdaptive = if (tickCount > windowSize) {
             val base = initMeasureNoise * 0.5f
-            val dynamic = Math.abs(innovation) * Math.abs(innovation) * 0.01f
+            // Cap the dynamic component to prevent Kalman gain from collapsing
+            // to ~0 when the measurement point changes and innovation is large.
+            val dynamic = Math.min(
+                Math.abs(innovation) * Math.abs(innovation) * 0.01f,
+                initMeasureNoise * 2f
+            )
             (base + dynamic).coerceIn(initMeasureNoise * 0.1f, initMeasureNoise * 3f)
         } else initMeasureNoise
         val gain = predCov / (predCov + rAdaptive)
