@@ -292,7 +292,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun resetMeasurement() {
-        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null; depthFilter.reset()
+        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null; depthFilter.reset(); tofHelper.reset(); imuHelper.reset()
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList(); binding.overlayView.areaPoints = emptyList()
         binding.overlayView.showLineLabels = false; binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList(); binding.overlayView.invalidate()
