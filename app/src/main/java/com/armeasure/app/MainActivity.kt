@@ -158,56 +158,61 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     // ═══════════════════════════════════════════════════════════
 
     private fun findTofSensor() {
-        val allSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
-        tofSensor = null
-        var sensorLabel = "未找到"
+        try {
+            val allSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
+            tofSensor = null
+            var sensorLabel = "未找到"
 
-        // Round 1: Match by known Xiaomi custom type values
-        for (tofType in KNOWN_TOF_TYPES) {
-            for (s in allSensors) {
-                if (s.type == tofType) {
-                    tofSensor = s
-                    detectedTofType = tofType
-                    sensorLabel = "${s.name} (type=$tofType)"
-                    hasRealTof = true
-                    break
+            // Round 1: Match by known Xiaomi custom type values
+            for (tofType in KNOWN_TOF_TYPES) {
+                for (s in allSensors) {
+                    if (s.type == tofType) {
+                        tofSensor = s
+                        detectedTofType = tofType
+                        sensorLabel = "${s.name} (type=$tofType)"
+                        hasRealTof = true
+                        break
+                    }
+                }
+                if (tofSensor != null) break
+            }
+
+            // Round 2: Fuzzy match by name (non-standard types only)
+            if (tofSensor == null) {
+                for (s in allSensors) {
+                    val name = s.name.lowercase(Locale.ROOT)
+                    val type = s.type
+                    // Skip standard sensor types (<65536)
+                    if (type < 65536) continue
+                    if (name.contains("tof") || name.contains("vl53") || name.contains("d-tof")
+                        || name.contains("dtof") || name.contains("range")) {
+                        tofSensor = s
+                        detectedTofType = type
+                        sensorLabel = "${s.name} (type=$type 匹配)"
+                        hasRealTof = true
+                        break
+                    }
                 }
             }
-            if (tofSensor != null) break
-        }
 
-        // Round 2: Fuzzy match by name (non-standard types only)
-        if (tofSensor == null) {
-            for (s in allSensors) {
-                val name = s.name.lowercase(Locale.ROOT)
-                val type = s.type
-                // Skip standard sensor types (<65536)
-                if (type < 65536) continue
-                if (name.contains("tof") || name.contains("vl53") || name.contains("d-tof")
-                    || name.contains("dtof") || name.contains("range")) {
-                    tofSensor = s
-                    detectedTofType = type
-                    sensorLabel = "${s.name} (type=$type 匹配)"
-                    hasRealTof = true
-                    break
+            // Round 3: Fallback to proximity sensor
+            if (tofSensor == null) {
+                tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+                if (tofSensor != null) {
+                    sensorLabel = "${tofSensor!!.name} (Proximity降级)"
+                    hasRealTof = false
                 }
             }
+
+            // Update UI
+            val statusPrefix = if (hasRealTof) "📐 " else "⚠️ "
+            binding.tvSensor.text = "$statusPrefix$sensorLabel"
+
+            Log.d(TAG, "ToF sensor: $sensorLabel (hasRealTof=$hasRealTof)")
+        } catch (e: Exception) {
+            Log.e(TAG, "findTofSensor failed", e)
+            binding.tvSensor.text = "⚠️ 传感器检测异常"
         }
-
-        // Round 3: Fallback to proximity sensor
-        if (tofSensor == null) {
-            tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
-            if (tofSensor != null) {
-                sensorLabel = "${tofSensor!!.name} (Proximity降级)"
-                hasRealTof = false
-            }
-        }
-
-        // Update UI
-        val statusPrefix = if (hasRealTof) "📐 " else "⚠️ "
-        binding.tvSensor.text = "$statusPrefix$sensorLabel"
-
-        Log.d(TAG, "ToF sensor: $sensorLabel (hasRealTof=$hasRealTof)")
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -348,7 +353,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val previewSurface = Surface(texture)
 
         // Apply transform to maintain aspect ratio (crop-to-fill, no stretch)
-        applyTextureTransform(textureView, previewSize)
+        textureView.post { applyTextureTransform(textureView, previewSize) }
 
         val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
         requestBuilder.addTarget(previewSurface)
@@ -476,31 +481,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
      * Handles camera sensor rotation (landscape → portrait).
      */
     private fun applyTextureTransform(textureView: TextureView, previewSize: Size) {
-        val viewW = textureView.width.toFloat()
-        val viewH = textureView.height.toFloat()
-        val bufW = previewSize.width.toFloat()
-        val bufH = previewSize.height.toFloat()
-        if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return
+        try {
+            val viewW = textureView.width.toFloat()
+            val viewH = textureView.height.toFloat()
+            val bufW = previewSize.width.toFloat()
+            val bufH = previewSize.height.toFloat()
+            if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return
 
-        val matrix = android.graphics.Matrix()
+            val matrix = android.graphics.Matrix()
 
-        // Camera sensor is landscape, we're in portrait → rotate 90°
-        // After rotation: effective buffer is bufH × bufW
-        // Scale to cover the view (crop-to-fill)
-        val scaleX = viewW / bufH
-        val scaleY = viewH / bufW
-        val scale = maxOf(scaleX, scaleY)
+            val scaleX = viewW / bufH
+            val scaleY = viewH / bufW
+            val scale = maxOf(scaleX, scaleY)
 
-        val scaledW = bufH * scale
-        val scaledH = bufW * scale
-        val tx = (viewW - scaledW) / 2f
-        val ty = (viewH - scaledH) / 2f
+            val scaledW = bufH * scale
+            val scaledH = bufW * scale
+            val tx = (viewW - scaledW) / 2f
+            val ty = (viewH - scaledH) / 2f
 
-        matrix.postScale(scale, scale, bufH / 2f, bufW / 2f)
-        matrix.postRotate(90f, bufH / 2f, bufW / 2f)
-        matrix.postTranslate(tx, ty)
+            matrix.postScale(scale, scale, bufH / 2f, bufW / 2f)
+            matrix.postRotate(90f, bufH / 2f, bufW / 2f)
+            matrix.postTranslate(tx, ty)
 
-        textureView.setTransform(matrix)
+            textureView.setTransform(matrix)
+        } catch (e: Exception) {
+            Log.e(TAG, "Transform failed", e)
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
