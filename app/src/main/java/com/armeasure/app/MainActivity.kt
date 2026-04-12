@@ -347,6 +347,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         texture.setDefaultBufferSize(previewSize.width, previewSize.height)
         val previewSurface = Surface(texture)
 
+        // Apply transform to maintain aspect ratio (crop-to-fill, no stretch)
+        applyTextureTransform(textureView, previewSize)
+
         val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
         requestBuilder.addTarget(previewSurface)
 
@@ -460,10 +463,44 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun chooseOptimalSize(choices: Array<Size>, width: Int, height: Int): Size {
         if (choices.isEmpty()) return Size(1920, 1080)
-        val targetRatio = width.toFloat() / height
+        // In portrait, camera buffer is landscape (rotated 90° in transform)
+        // So pick size closest to our portrait ratio inverted (h:w → w:h)
+        val targetRatio = height.toFloat() / width  // portrait ratio inverted
         return choices.minByOrNull {
             Math.abs(it.width.toFloat() / it.height - targetRatio)
         } ?: choices.first()
+    }
+
+    /**
+     * Apply transform to TextureView so preview maintains aspect ratio.
+     * Handles camera sensor rotation (landscape → portrait).
+     */
+    private fun applyTextureTransform(textureView: TextureView, previewSize: Size) {
+        val viewW = textureView.width.toFloat()
+        val viewH = textureView.height.toFloat()
+        val bufW = previewSize.width.toFloat()
+        val bufH = previewSize.height.toFloat()
+        if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return
+
+        val matrix = android.graphics.Matrix()
+
+        // Camera sensor is landscape, we're in portrait → rotate 90°
+        // After rotation: effective buffer is bufH × bufW
+        // Scale to cover the view (crop-to-fill)
+        val scaleX = viewW / bufH
+        val scaleY = viewH / bufW
+        val scale = maxOf(scaleX, scaleY)
+
+        val scaledW = bufH * scale
+        val scaledH = bufW * scale
+        val tx = (viewW - scaledW) / 2f
+        val ty = (viewH - scaledH) / 2f
+
+        matrix.postScale(scale, scale, bufH / 2f, bufW / 2f)
+        matrix.postRotate(90f, bufH / 2f, bufW / 2f)
+        matrix.postTranslate(tx, ty)
+
+        textureView.setTransform(matrix)
     }
 
     // ═══════════════════════════════════════════════════════════
