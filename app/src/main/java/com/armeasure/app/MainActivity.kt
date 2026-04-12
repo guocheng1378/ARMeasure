@@ -367,54 +367,57 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun createPreviewSession(camera: CameraDevice) {
         try {
-        val textureView = binding.textureView
-        val texture = textureView.surfaceTexture ?: return
+            val textureView = binding.textureView
+            val texture = textureView.surfaceTexture ?: return
 
-        // Set buffer size
-        val chars = cameraManager!!.getCameraCharacteristics(camera.id)
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val previewSize = chooseOptimalSize(
-            map?.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray(),
-            textureView.width.coerceAtLeast(1), textureView.height.coerceAtLeast(1)
-        )
-        texture.setDefaultBufferSize(previewSize.width, previewSize.height)
-        val previewSurface = Surface(texture)
+            // Set buffer size
+            val chars = cameraManager!!.getCameraCharacteristics(camera.id)
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val previewSize = chooseOptimalSize(
+                map?.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray(),
+                textureView.width.coerceAtLeast(1), textureView.height.coerceAtLeast(1)
+            )
+            texture.setDefaultBufferSize(previewSize.width, previewSize.height)
+            val previewSurface = Surface(texture)
 
-        // Apply transform to maintain aspect ratio (crop-to-fill, no stretch)
-        textureView.post { applyTextureTransform(textureView, previewSize) }
+            // Apply transform to maintain aspect ratio (crop-to-fill, no stretch)
+            textureView.post { applyTextureTransform(textureView, previewSize) }
 
-        val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-        requestBuilder.addTarget(previewSurface)
+            val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            requestBuilder.addTarget(previewSurface)
 
-        // Continuous autofocus
-        requestBuilder.set(
-            CaptureRequest.CONTROL_AF_MODE,
-            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-        )
-        // Enable 3A stats for focus distance
-        requestBuilder.set(
-            CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
-            CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON
-        )
+            // Continuous autofocus
+            requestBuilder.set(
+                CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            )
+            // Enable 3A stats for focus distance
+            requestBuilder.set(
+                CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
+                CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON
+            )
 
-        camera.createCaptureSession(
-            listOf(previewSurface),
-            object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) {
-                    captureSession = session
-                    try {
-                        session.setRepeatingRequest(requestBuilder.build(), captureCallback, backgroundHandler)
-                        Log.d(TAG, "Preview started: ${previewSize}")
-                    } catch (e: CameraAccessException) {
-                        Log.e(TAG, "Preview failed", e)
+            camera.createCaptureSession(
+                listOf(previewSurface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        try {
+                            session.setRepeatingRequest(requestBuilder.build(), captureCallback, backgroundHandler)
+                            Log.d(TAG, "Preview started: ${previewSize}")
+                        } catch (e: CameraAccessException) {
+                            Log.e(TAG, "Preview failed", e)
+                        }
                     }
-                }
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    Log.e(TAG, "Preview config failed")
-                }
-            },
-            backgroundHandler
-        )
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        Log.e(TAG, "Preview config failed")
+                    }
+                },
+                backgroundHandler
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "createPreviewSession failed", e)
+        }
     }
 
     /**
@@ -431,9 +434,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             if (focusDiopters != null && focusDiopters > 0) {
                 currentFocusDistance = 1f / focusDiopters * scaleFactor  // meters
             }
-        }
-        } catch (e: Exception) {
-            Log.e(TAG, "createPreviewSession failed", e)
         }
     }
 
