@@ -103,6 +103,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Log uncaught exceptions to file for debugging
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            try {
+                val logFile = java.io.File(getExternalFilesDir(null), "crash.log")
+                logFile.appendText("${java.util.Date()} ${e.stackTraceToString()}\n\n")
+            } catch (_: Exception) {}
+            throw e
+        }
+
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -317,12 +327,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             override fun onOpened(camera: CameraDevice) {
                 cameraOpenCloseLock.release()
                 cameraDevice = camera
-                // Update sensor label with ToF status
                 val tofStatus = if (hasRealTof) "✅ ToF" else "📷 AF估算"
-                runOnUiThread {
-                    binding.tvSensor.text = tofStatus
+                runOnUiThread { binding.tvSensor.text = tofStatus }
+
+                // Wait for TextureView surface to be ready
+                val textureView = binding.textureView
+                if (textureView.isAvailable) {
+                    createPreviewSession(camera)
+                } else {
+                    textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                            createPreviewSession(camera)
+                        }
+                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean = true
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    }
                 }
-                createPreviewSession(camera)
             }
             override fun onDisconnected(camera: CameraDevice) {
                 cameraOpenCloseLock.release()
