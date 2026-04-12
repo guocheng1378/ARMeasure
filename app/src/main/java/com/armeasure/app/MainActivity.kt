@@ -139,6 +139,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         tofSensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
+        // Reopen camera if it was closed in onPause
+        if (cameraDevice == null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            startCamera()
+        }
     }
 
     override fun onPause() {
