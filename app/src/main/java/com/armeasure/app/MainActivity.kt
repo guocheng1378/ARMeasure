@@ -4,16 +4,17 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.*
+import android.graphics.SurfaceTexture
+import android.graphics.SizeF
 import android.hardware.camera2.*
-import android.media.Image
-import android.media.ImageReader
+import android.hardware.camera2.params.MeteringRectangle
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
-import android.graphics.SurfaceTexture
 import android.view.Surface
+import android.view.TextureView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -22,24 +23,31 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
 
+/**
+ * AR Measure App - using Camera2 autofocus distance + reference calibration.
+ *
+ * Since Xiaomi 17 Pro Max doesn't expose dToF via standard Camera2 API,
+ * we use LENS_FOCUS_DISTANCE (diopters) to estimate distance.
+ * Combined with reference object calibration for better accuracy.
+ */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
     // Camera
     private var cameraManager: CameraManager? = null
-    private var mainCameraId: String? = null
     private var cameraDevice: CameraDevice? = null
+    private var captureSession: CameraCaptureSession? = null
     private var backgroundHandler: Handler? = null
     private var backgroundThread: HandlerThread? = null
     private val cameraOpenCloseLock = Semaphore(1)
 
-    // Depth
-    private var depthImageReader: ImageReader? = null
-    @Volatile private var depthMap: FloatArray? = null
-    private var depthWidth = 0
-    private var depthHeight = 0
-    private var hasDepth = false
+    // Focus distance (meters) - updated continuously
+    @Volatile private var currentFocusDistance: Float = -1f
+
+    // Camera intrinsics for FOV calculation
+    private var sensorSize: SizeF? = null
+    private var focalLengthMm: Float = 0f
 
     // Measurement state
     private enum class Mode { POINT, LINE, AREA }
@@ -49,7 +57,13 @@ class MainActivity : AppCompatActivity() {
     private val overlayPoints = mutableListOf<PointF>()
     private val overlayAreaPoints = mutableListOf<PointF>()
     private var firstPoint: PointF? = null
-    private var measuredDistance = "--"
+    private var firstDistance: Float = 0f
+    private var measuredResult = "--"
+
+    // Calibration: reference object
+    private var scaleFactor = 1f  // user-calibrated scale
+    private var isCalibrating = false
+    private var calibRefDistance = 0f  // known real distance for calibration
 
     companion object {
         private const val TAG = "ARMeasure"
@@ -99,7 +113,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // Camera setup
+    // Camera
     // ═══════════════════════════════════════════════════════════
 
     private fun startCamera() {
@@ -107,42 +121,44 @@ class MainActivity : AppCompatActivity() {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
 
             val ids = cameraManager!!.cameraIdList
-            Log.d(TAG, "Available cameras: ${ids.joinToString()}")
 
-            // Log all cameras and their capabilities
+            // Find back camera with max FOV
+            var bestId: String? = null
+            var bestFov = 0f
+
             for (id in ids) {
                 val chars = cameraManager!!.getCameraCharacteristics(id)
                 val facing = chars.get(CameraCharacteristics.LENS_FACING)
-                val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-                val isDepth = caps?.contains(
-                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT
-                ) == true
+                if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
 
-                Log.d(TAG, "Camera $id: facing=$facing caps=${caps?.joinToString()} depthOutput=$isDepth")
+                // Get focal length and sensor size
+                val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                val sensorPhysicalSize = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                val focal = focalLengths?.firstOrNull() ?: continue
+                val sensor = sensorPhysicalSize ?: continue
 
-                // Pick back camera as main
-                if (facing == CameraCharacteristics.LENS_FACING_BACK && mainCameraId == null) {
-                    mainCameraId = id
-                }
+                val hfov = 2 * Math.toDegrees(Math.atan((sensor.width / 2.0 / focal)))
+                Log.d(TAG, "Camera $id: focal=${focal}mm sensor=${sensor.width}x${sensor.height}mm HFOV=${hfov}°")
 
-                // Also try depth-specific camera
-                if (isDepth && id != mainCameraId) {
-                    mainCameraId = id // Prefer depth camera if available
-                    Log.d(TAG, "Found depth camera: $id")
+                if (hfov > bestFov) {
+                    bestFov = hfov.toFloat()
+                    bestId = id
+                    focalLengthMm = focal
+                    sensorSize = SizeF(sensor.width, sensor.height)
                 }
             }
 
-            val id = mainCameraId ?: run {
+            val id = bestId ?: ids.firstOrNull() ?: run {
                 binding.tvSensor.text = "❌ 无可用摄像头"
                 return
             }
 
-            Log.d(TAG, "Using camera: $id")
+            Log.d(TAG, "Using camera: $id (focal=${focalLengthMm}mm)")
             openCamera(id)
 
-        } catch (e: CameraAccessException) {
-            Log.e(TAG, "Camera access failed", e)
-            binding.tvSensor.text = "❌ 相机访问失败"
+        } catch (e: Exception) {
+            Log.e(TAG, "Camera init failed", e)
+            binding.tvSensor.text = "❌ 相机错误"
         }
     }
 
@@ -155,24 +171,8 @@ class MainActivity : AppCompatActivity() {
             override fun onOpened(camera: CameraDevice) {
                 cameraOpenCloseLock.release()
                 cameraDevice = camera
-
-                val chars = cameraManager!!.getCameraCharacteristics(cameraId)
-                val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-                hasDepth = caps?.contains(
-                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT
-                ) == true
-
-                if (hasDepth) {
-                    binding.tvSensor.text = "📐 dToF 深度传感器"
-                    setupDepthCapture(camera, chars)
-                } else {
-                    binding.tvSensor.text = "📷 主摄 (尝试深度流)"
-                    // Try to add DEPTH16 anyway (some devices support it without advertising)
-                    tryDepthFallback(camera, chars)
-                }
-
-                createPreview(camera)
-                Log.d(TAG, "Camera opened, depth=$hasDepth")
+                binding.tvSensor.text = "📷 自动对焦测距"
+                createPreviewSession(camera)
             }
             override fun onDisconnected(camera: CameraDevice) {
                 cameraOpenCloseLock.release()
@@ -188,224 +188,166 @@ class MainActivity : AppCompatActivity() {
         }, backgroundHandler)
     }
 
-    /**
-     * Setup depth capture on a camera that advertises DEPTH_OUTPUT.
-     */
-    private fun setupDepthCapture(camera: CameraDevice, chars: CameraCharacteristics) {
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
-
-        // Check available output sizes for DEPTH16
-        val depthSizes = map.getOutputSizes(ImageFormat.DEPTH16)
-        if (depthSizes.isNullOrEmpty()) {
-            Log.w(TAG, "No DEPTH16 sizes available")
-            hasDepth = false
-            binding.tvSensor.text = "📷 主摄 (无深度格式)"
-            return
-        }
-
-        val depthSize = depthSizes.maxByOrNull { it.width * it.height } ?: Size(240, 180)
-        Log.d(TAG, "Depth size: $depthSize")
-
-        depthImageReader = ImageReader.newInstance(
-            depthSize.width, depthSize.height, ImageFormat.DEPTH16, 2
-        )
-        depthImageReader!!.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            processDepthImage(image)
-            image.close()
-        }, backgroundHandler)
-    }
-
-    /**
-     * Fallback: try to use DEPTH16 on main camera even if not advertised.
-     */
-    private fun tryDepthFallback(camera: CameraDevice, chars: CameraCharacteristics) {
-        try {
-            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
-
-            // Check if DEPTH16 is available as output
-            val depthSizes = map.getOutputSizes(ImageFormat.DEPTH16)
-            if (depthSizes.isNullOrEmpty()) {
-                Log.d(TAG, "DEPTH16 not available on this camera")
-                binding.tvSensor.text = "📷 主摄 (无深度输出)"
-                return
-            }
-
-            val depthSize = depthSizes.maxByOrNull { it.width * it.height } ?: Size(240, 180)
-            Log.d(TAG, "Fallback depth size: $depthSize")
-
-            depthImageReader = ImageReader.newInstance(
-                depthSize.width, depthSize.height, ImageFormat.DEPTH16, 2
-            )
-            depthImageReader!!.setOnImageAvailableListener({ reader ->
-                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                processDepthImage(image)
-                image.close()
-            }, backgroundHandler)
-
-            hasDepth = true
-            binding.tvSensor.text = "📐 dToF (兼容模式)"
-            Log.d(TAG, "Fallback depth capture enabled")
-
-        } catch (e: Exception) {
-            Log.w(TAG, "Depth fallback failed", e)
-            binding.tvSensor.text = "📷 主摄 (深度不可用)"
-        }
-    }
-
-    private fun createPreview(camera: CameraDevice) {
+    private fun createPreviewSession(camera: CameraDevice) {
         val textureView = binding.textureView
         val texture = textureView.surfaceTexture ?: return
 
-        // Get optimal preview size
+        // Set buffer size
         val chars = cameraManager!!.getCameraCharacteristics(camera.id)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val previewSize = chooseOptimalSize(
             map?.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray(),
-            textureView.width, textureView.height
+            textureView.width.coerceAtLeast(1), textureView.height.coerceAtLeast(1)
         )
-
         texture.setDefaultBufferSize(previewSize.width, previewSize.height)
         val previewSurface = Surface(texture)
 
-        val surfaces = mutableListOf<Surface>(previewSurface)
-        depthImageReader?.let { surfaces.add(it.surface) }
+        val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+        requestBuilder.addTarget(previewSurface)
 
-        val captureRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-        captureRequest.addTarget(previewSurface)
-        depthImageReader?.let { captureRequest.addTarget(it.surface) }
-
-        captureRequest.set(
+        // Continuous autofocus
+        requestBuilder.set(
             CaptureRequest.CONTROL_AF_MODE,
             CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
         )
-
-        camera.createCaptureSession(
-            surfaces,
-            object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) {
-                    try {
-                        session.setRepeatingRequest(captureRequest.build(), null, backgroundHandler)
-                        Log.d(TAG, "Preview started with ${surfaces.size} surfaces")
-                    } catch (e: CameraAccessException) {
-                        Log.e(TAG, "Preview failed", e)
-                    }
-                }
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    Log.e(TAG, "Preview config failed")
-                    // Retry without depth
-                    retryPreviewWithoutDepth(camera, previewSurface)
-                }
-            },
-            backgroundHandler
-        )
-    }
-
-    /**
-     * If preview with depth fails, retry without depth stream.
-     */
-    private fun retryPreviewWithoutDepth(camera: CameraDevice, previewSurface: Surface) {
-        Log.w(TAG, "Retrying preview without depth")
-        hasDepth = false
-        binding.tvSensor.text = "📷 主摄 (深度不可用)"
-
-        val captureRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-        captureRequest.addTarget(previewSurface)
-        captureRequest.set(
-            CaptureRequest.CONTROL_AF_MODE,
-            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        // Enable 3A stats for focus distance
+        requestBuilder.set(
+            CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
+            CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON
         )
 
         camera.createCaptureSession(
             listOf(previewSurface),
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
+                    captureSession = session
                     try {
-                        session.setRepeatingRequest(captureRequest.build(), null, backgroundHandler)
+                        session.setRepeatingRequest(requestBuilder.build(), captureCallback, backgroundHandler)
+                        Log.d(TAG, "Preview started: ${previewSize}")
                     } catch (e: CameraAccessException) {
-                        Log.e(TAG, "Preview retry failed", e)
+                        Log.e(TAG, "Preview failed", e)
                     }
                 }
-                override fun onConfigureFailed(session: CameraCaptureSession) {}
+                override fun onConfigureFailed(session: CameraCaptureSession) {
+                    Log.e(TAG, "Preview config failed")
+                }
             },
             backgroundHandler
         )
     }
 
-    private fun chooseOptimalSize(choices: Array<android.util.Size>, width: Int, height: Int): android.util.Size {
-        val targetRatio = if (width > height) width.toFloat() / height else height.toFloat() / width
-        return choices.minByOrNull {
-            val ratio = it.width.toFloat() / it.height
-            Math.abs(ratio - targetRatio)
-        } ?: choices.firstOrNull() ?: android.util.Size(1920, 1080)
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // Depth processing (DEPTH16 format)
-    // ═══════════════════════════════════════════════════════════
-
-    private fun processDepthImage(image: Image) {
-        val plane = image.planes[0]
-        val buffer = plane.buffer
-        val rowStride = plane.rowStride
-        val pixelStride = plane.pixelStride
-
-        depthWidth = image.width
-        depthHeight = image.height
-        val data = FloatArray(depthWidth * depthHeight)
-
-        buffer.rewind()
-        for (y in 0 until depthHeight) {
-            for (x in 0 until depthWidth) {
-                val byteOffset = y * rowStride + x * pixelStride
-                if (byteOffset + 1 < buffer.capacity()) {
-                    buffer.position(byteOffset)
-                    val raw = buffer.short.toInt() and 0xFFFF
-                    // DEPTH16: 0 = invalid, 1-65533 = depth in mm
-                    // 65534 = too far, 65535 = too close
-                    data[y * depthWidth + x] = when {
-                        raw == 0 || raw >= 65534 -> -1f
-                        else -> raw / 1000f
-                    }
-                }
+    /**
+     * Capture callback - reads focus distance from each frame.
+     */
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            // Get focus distance in diopters (1/meters)
+            val focusDiopters = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+            if (focusDiopters != null && focusDiopters > 0) {
+                currentFocusDistance = 1f / focusDiopters * scaleFactor  // meters
             }
         }
-
-        depthMap = data
     }
 
     /**
-     * Get depth at screen coordinate.
+     * Tap-to-focus: trigger AF at tapped point, then read the resulting focus distance.
      */
-    private fun getDepthAtScreen(screenX: Float, screenY: Float): Float? {
-        if (!hasDepth) return null
-        val data = depthMap ?: return null
-        if (depthWidth == 0 || depthHeight == 0) return null
+    private fun triggerAutoFocus(screenX: Float, screenY: Float) {
+        val session = captureSession ?: return
+        val device = cameraDevice ?: return
 
-        val viewW = binding.textureView.width.toFloat()
-        val viewH = binding.textureView.height.toFloat()
-        if (viewW == 0f || viewH == 0f) return null
+        val textureView = binding.textureView
+        val chars = cameraManager!!.getCameraCharacteristics(device.id)
+        val sensorRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
 
-        // Map screen coords to depth image coords
-        val dx = (screenX / viewW * depthWidth).toInt().coerceIn(0, depthWidth - 1)
-        val dy = (screenY / viewH * depthHeight).toInt().coerceIn(0, depthHeight - 1)
+        // Map screen coords to sensor coords
+        val scaleX = sensorRect.width().toFloat() / textureView.width
+        val scaleY = sensorRect.height().toFloat() / textureView.height
+        val focusX = (screenX * scaleX).toInt().coerceIn(0, sensorRect.width() - 1)
+        val focusY = (screenY * scaleY).toInt().coerceIn(0, sensorRect.height() - 1)
 
-        // 3x3 kernel average for stability
-        var sum = 0f
-        var count = 0
-        for (oy in -2..2) {
-            for (ox in -2..2) {
-                val nx = (dx + ox).coerceIn(0, depthWidth - 1)
-                val ny = (dy + oy).coerceIn(0, depthHeight - 1)
-                val d = data[ny * depthWidth + nx]
-                if (d > 0) {
-                    sum += d
-                    count++
+        // Create AF region (small area around tap point)
+        val regionSize = (sensorRect.width() * 0.1f).toInt().coerceAtLeast(50)
+        val afRegion = MeteringRectangle(
+            (focusX - regionSize / 2).coerceIn(0, sensorRect.width() - regionSize),
+            (focusY - regionSize / 2).coerceIn(0, sensorRect.height() - regionSize),
+            regionSize, regionSize,
+            MeteringRectangle.METERING_WEIGHT_MAX
+        )
+
+        try {
+            // Trigger AF at tap point
+            val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            request.addTarget(Surface(binding.textureView.surfaceTexture))
+            request.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            request.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(afRegion))
+            request.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+
+            session.capture(request.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    s: CameraCaptureSession,
+                    r: CaptureRequest,
+                    result: TotalCaptureResult
+                ) {
+                    val focusDiopters = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                    if (focusDiopters != null && focusDiopters > 0) {
+                        currentFocusDistance = 1f / focusDiopters * scaleFactor
+                        Log.d(TAG, "AF at ($screenX,$screenY): ${currentFocusDistance}m (diopters=$focusDiopters)")
+                    }
+
+                    // Return to continuous AF
+                    try {
+                        val resume = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                        resume.addTarget(Surface(binding.textureView.surfaceTexture))
+                        resume.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                        session.setRepeatingRequest(resume.build(), captureCallback, backgroundHandler)
+                    } catch (_: Exception) {}
                 }
-            }
+            }, backgroundHandler)
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "AF trigger failed", e)
         }
+    }
 
-        return if (count > 0) sum / count else null
+    private fun chooseOptimalSize(choices: Array<Size>, width: Int, height: Int): Size {
+        if (choices.isEmpty()) return Size(1920, 1080)
+        val targetRatio = width.toFloat() / height
+        return choices.minByOrNull {
+            Math.abs(it.width.toFloat() / it.height - targetRatio)
+        } ?: choices.first()
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Distance estimation
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Get distance at screen point.
+     * Primary: tap-to-focus → read LENS_FOCUS_DISTANCE
+     * Fallback: continuous AF distance
+     */
+    private fun getDistanceAt(screenX: Float, screenY: Float): Float? {
+        val dist = currentFocusDistance
+        return if (dist > 0) dist else null
+    }
+
+    /**
+     * Compute FOV from camera intrinsics.
+     */
+    private fun getHfovDegrees(): Double {
+        val sensor = sensorSize ?: return 65.0
+        val focal = focalLengthMm.takeIf { it > 0 } ?: return 65.0
+        return 2 * Math.toDegrees(Math.atan((sensor.width / 2.0 / focal)))
+    }
+
+    private fun getVfovDegrees(): Double {
+        val sensor = sensorSize ?: return 50.0
+        val focal = focalLengthMm.takeIf { it > 0 } ?: return 50.0
+        return 2 * Math.toDegrees(Math.atan((sensor.height / 2.0 / focal)))
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -413,6 +355,16 @@ class MainActivity : AppCompatActivity() {
     // ═══════════════════════════════════════════════════════════
 
     private fun onScreenTapped(x: Float, y: Float) {
+        // Always trigger tap-to-focus
+        triggerAutoFocus(x, y)
+
+        // Small delay to let AF settle, then measure
+        backgroundHandler?.postDelayed({
+            runOnUiThread { measureAtPoint(x, y) }
+        }, 300)
+    }
+
+    private fun measureAtPoint(x: Float, y: Float) {
         when (currentMode) {
             Mode.POINT -> handlePointTap(x, y)
             Mode.LINE -> handleLineTap(x, y)
@@ -424,21 +376,20 @@ class MainActivity : AppCompatActivity() {
         overlayPoints.clear()
         overlayPoints.add(PointF(x, y))
 
-        val depth = getDepthAtScreen(x, y)
-        measuredDistance = if (depth != null) {
-            String.format("%.2f m", depth)
-        } else if (!hasDepth) {
-            "无深度传感器"
+        val dist = getDistanceAt(x, y)
+        measuredResult = if (dist != null) {
+            String.format("%.2f m", dist)
         } else {
-            "该区域无深度数据\n(可能距离过远或过近)"
+            "对焦中..."
         }
-        binding.tvDistance.text = measuredDistance
+        binding.tvDistance.text = measuredResult
         updateOverlay()
     }
 
     private fun handleLineTap(x: Float, y: Float) {
         if (firstPoint == null) {
             firstPoint = PointF(x, y)
+            firstDistance = getDistanceAt(x, y) ?: 0f
             overlayPoints.clear()
             overlayPoints.add(PointF(x, y))
             binding.tvDistance.text = "标记第二点..."
@@ -448,21 +399,15 @@ class MainActivity : AppCompatActivity() {
             val p2 = PointF(x, y)
             overlayPoints.add(p2)
 
-            val d1 = getDepthAtScreen(p1.x, p1.y)
-            val d2 = getDepthAtScreen(p2.x, p2.y)
+            val d1 = firstDistance
+            val d2 = getDistanceAt(x, y) ?: d1
 
-            measuredDistance = if (d1 != null && d2 != null) {
-                val viewW = binding.textureView.width.toFloat()
-                val viewH = binding.textureView.height.toFloat()
-                val dist = compute3DDistance(p1, p2, d1, d2, viewW, viewH)
-                String.format("%.2f m", dist)
-            } else if (!hasDepth) {
-                "无深度传感器"
-            } else {
-                "部分区域无深度数据"
-            }
+            val viewW = binding.textureView.width.toFloat()
+            val viewH = binding.textureView.height.toFloat()
+            val dist = compute3DDistance(p1, p2, d1, d2, viewW, viewH)
 
-            binding.tvDistance.text = measuredDistance
+            measuredResult = String.format("%.2f m", dist)
+            binding.tvDistance.text = measuredResult
             binding.overlayView.lines = listOf(Pair(p1, p2))
             updateOverlay()
             firstPoint = null
@@ -474,8 +419,8 @@ class MainActivity : AppCompatActivity() {
 
         if (overlayAreaPoints.size >= 3) {
             val area = computeArea(overlayAreaPoints)
-            measuredDistance = if (area > 0) String.format("%.2f m²", area) else "无法计算面积"
-            binding.tvDistance.text = measuredDistance
+            measuredResult = if (area > 0) String.format("%.2f m²", area) else "无法计算"
+            binding.tvDistance.text = measuredResult
         } else {
             binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
         }
@@ -509,13 +454,13 @@ class MainActivity : AppCompatActivity() {
         val nx2 = (p2.x / viewW - 0.5f) * 2f
         val ny2 = (0.5f - p2.y / viewH) * 2f
 
-        val fovX = Math.toRadians(65.0)
-        val fovY = Math.toRadians(50.0)
+        val hfov = Math.toRadians(getHfovDegrees())
+        val vfov = Math.toRadians(getVfovDegrees())
 
-        val x1 = d1 * Math.tan(nx1 * fovX / 2).toFloat()
-        val y1 = d1 * Math.tan(ny1 * fovY / 2).toFloat()
-        val x2 = d2 * Math.tan(nx2 * fovX / 2).toFloat()
-        val y2 = d2 * Math.tan(ny2 * fovY / 2).toFloat()
+        val x1 = d1 * Math.tan(nx1 * hfov / 2).toFloat()
+        val y1 = d1 * Math.tan(ny1 * vfov / 2).toFloat()
+        val x2 = d2 * Math.tan(nx2 * hfov / 2).toFloat()
+        val y2 = d2 * Math.tan(ny2 * vfov / 2).toFloat()
 
         val dx = x1 - x2
         val dy = y1 - y2
@@ -527,17 +472,12 @@ class MainActivity : AppCompatActivity() {
     private fun computeArea(points: List<PointF>): Float {
         if (points.size < 3) return 0f
 
-        var depthSum = 0f
-        var depthCount = 0
-        for (p in points) {
-            val d = getDepthAtScreen(p.x, p.y)
-            if (d != null) { depthSum += d; depthCount++ }
-        }
-        val avgDepth = if (depthCount > 0) depthSum / depthCount else return 0f
+        // Average focus distance
+        val avgDist = currentFocusDistance.takeIf { it > 0 } ?: return 0f
 
         val viewW = binding.textureView.width.toFloat()
-        val fovX = Math.toRadians(65.0)
-        val viewWidthM = (2 * avgDepth * Math.tan(fovX / 2)).toFloat()
+        val hfov = Math.toRadians(getHfovDegrees())
+        val viewWidthM = (2 * avgDist * Math.tan(hfov / 2)).toFloat()
         val scale = viewWidthM / viewW
 
         var areaPixels = 0.0
@@ -548,6 +488,16 @@ class MainActivity : AppCompatActivity() {
             areaPixels -= points[j].x * points[i].y
         }
         return (Math.abs(areaPixels / 2.0) * scale * scale).toFloat()
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Calibration
+    // ═══════════════════════════════════════════════════════════
+
+    private fun startCalibration() {
+        isCalibrating = true
+        binding.tvDistance.text = "放一个已知尺寸的物体\n点击近端标记距离"
+        Toast.makeText(this, "放一把尺子或A4纸，点击近端", Toast.LENGTH_LONG).show()
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -587,7 +537,7 @@ class MainActivity : AppCompatActivity() {
         overlayPoints.clear()
         overlayAreaPoints.clear()
         firstPoint = null
-        measuredDistance = "--"
+        measuredResult = "--"
         binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList()
         binding.overlayView.lines = emptyList()
@@ -596,7 +546,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveMeasurement() {
-        if (measuredDistance == "--" || measuredDistance.contains("无")) {
+        if (measuredResult == "--" || measuredResult.contains("无")) {
             Toast.makeText(this, "请先进行测量", Toast.LENGTH_SHORT).show()
             return
         }
@@ -609,9 +559,9 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.draw(canvas)
             android.provider.MediaStore.Images.Media.insertImage(
                 contentResolver, bitmap,
-                "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredDistance"
+                "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult"
             )
-            Toast.makeText(this, "已保存: $measuredDistance", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
@@ -634,8 +584,8 @@ class MainActivity : AppCompatActivity() {
     private fun closeCamera() {
         try {
             cameraOpenCloseLock.acquire()
+            captureSession?.close(); captureSession = null
             cameraDevice?.close(); cameraDevice = null
-            depthImageReader?.close(); depthImageReader = null
         } catch (_: InterruptedException) {} finally { cameraOpenCloseLock.release() }
     }
 }
