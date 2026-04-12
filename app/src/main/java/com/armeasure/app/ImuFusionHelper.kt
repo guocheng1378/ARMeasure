@@ -81,4 +81,12 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
     fun isAvailable(): Boolean =
         sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null
                 && sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null
+
+    fun reset() {
+        gyroPitch = 0f
+        gyroRoll = 0f
+        pitch = 0f
+        roll = 0f
+        lastTs = 0L
+    }
 }
