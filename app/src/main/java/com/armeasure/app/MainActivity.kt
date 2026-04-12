@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.graphics.SurfaceTexture
-import android.graphics.SizeF
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -17,6 +16,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
+import android.util.SizeF
 import android.view.Surface
 import android.view.TextureView
 import android.widget.Toast
