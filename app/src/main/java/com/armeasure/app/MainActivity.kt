@@ -95,12 +95,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     override fun onSensorChanged(event: SensorEvent) { tofHelper.onSensorEvent(event) }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    // ── Camera ──────────────────────────────────────────────
-
     private fun startCamera() {
         if (cameraOpening || cameraCtrl.cameraDevice != null) return
         cameraOpening = true
-        val selection = cameraCtrl.selectCameras() ?: run { binding.tvSensor.text = "❌ 无可用摄像头"; cameraOpening = false; return }
+        val selection = cameraCtrl.selectCameras() ?: run { binding.tvSensor.text = "无可用摄像头"; cameraOpening = false; return }
         cameraCtrl.onDepthImageAvailable = { reader -> processDepthImage(reader) }
         cameraCtrl.captureCallback = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
@@ -110,17 +108,67 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         }
         cameraCtrl.openCamera(selection, onReady = { same ->
             cameraOpening = false
-            val ds = when { cameraCtrl.hasDepthMap -> "✅ DEPTH16" + if (imuHelper.isAvailable()) "+IMU" else ""; tofHelper.hasRealTof -> "📐 ToF"; else -> "📷 AF" }
-            runOnUiThread { binding.tvSensor.text = ds }
-            if (binding.surfaceView.width > 0 && binding.surfaceView.holder.surface.isValid) cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, same)
+            updateSensorLabel()
+            if (binding.surfaceView.width > 0 && binding.surfaceView.holder.surface.isValid) {
+                val useSameDepth = same && cameraCtrl.depthCameraEnabled
+                cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, useSameDepth)
+            }
         }, onError = { cameraOpening = false })
     }
 
-    // ── Distance with IMU compensation ──────────────────────
+    private fun updateSensorLabel() {
+        val parts = mutableListOf<String>()
+        if (cameraCtrl.depthCameraEnabled && cameraCtrl.hasDepthMap) {
+            parts.add("DEPTH16")
+            if (imuHelper.isAvailable()) parts.add("IMU")
+        } else if (cameraCtrl.hasSeparateDepthCamera) {
+            parts.add("主摄")
+        }
+        if (tofHelper.hasRealTof) parts.add("ToF")
+        else if (!cameraCtrl.depthCameraEnabled) parts.add("AF")
+        if (parts.isEmpty()) parts.add("AF")
+        runOnUiThread { binding.tvSensor.text = parts.joinToString(" + ") }
+    }
+
+    private fun toggleDepthCamera() {
+        if (cameraOpening) return
+        if (!cameraCtrl.hasSeparateDepthCamera && !cameraCtrl.hasDepthMap) {
+            Toast.makeText(this, "设备无深度摄像头", Toast.LENGTH_SHORT).show()
+            return
+        }
+        cameraOpening = true
+        cameraCtrl.depthCameraEnabled = !cameraCtrl.depthCameraEnabled
+        val enabled = cameraCtrl.depthCameraEnabled
+        updateDepthToggleButton()
+
+        depthBuffer = null
+
+        cameraCtrl.reopenCamera(onReady = { same ->
+            cameraOpening = false
+            val useSameDepth = same && cameraCtrl.depthCameraEnabled
+            if (binding.surfaceView.width > 0 && binding.surfaceView.holder.surface.isValid) {
+                cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, useSameDepth)
+            }
+            updateSensorLabel()
+            val msg = if (enabled) "深度摄像头已开启" else "深度摄像头已关闭"
+            runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+        }, onError = {
+            cameraOpening = false
+            runOnUiThread { Toast.makeText(this@MainActivity, "切换失败", Toast.LENGTH_SHORT).show() }
+        })
+    }
+
+    private fun updateDepthToggleButton() {
+        val enabled = cameraCtrl.depthCameraEnabled
+        binding.btnDepthToggle.text = if (enabled) "深度:开" else "深度:关"
+        binding.btnDepthToggle.setBackgroundColor(
+            if (enabled) 0x3300FF88.toInt() else 0x00000000
+        )
+    }
 
     private fun getDistanceAt(sx: Float, sy: Float): Float? {
         var raw: Float? = null
-        if (cameraCtrl.hasDepthMap) raw = getDepthAtScreenPoint(sx, sy)
+        if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy)
         if (raw == null || raw <= 0) raw = tofHelper.getDistanceCm()
         if (raw == null || raw <= 0) { val d = currentFocusDistance; if (d > 0) raw = d * 100f }
         if (raw != null && raw > 0 && imuHelper.isAvailable()) {
@@ -130,8 +178,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         return raw
     }
 
-    // ── FOV ─────────────────────────────────────────────────
-
     private fun getHfovDegrees(): Double {
         val s = cameraCtrl.sensorSize ?: return 65.0; val f = cameraCtrl.focalLengthMm.takeIf { it > 0 } ?: return 65.0
         return 2 * Math.toDegrees(Math.atan(s.width / 2.0 / f))
@@ -140,8 +186,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val s = cameraCtrl.sensorSize ?: return 50.0; val f = cameraCtrl.focalLengthMm.takeIf { it > 0 } ?: return 50.0
         return 2 * Math.toDegrees(Math.atan(s.height / 2.0 / f))
     }
-
-    // ── Touch ───────────────────────────────────────────────
 
     private fun onScreenTapped(x: Float, y: Float) {
         triggerAutoFocus(x, y); haptic()
@@ -195,8 +239,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         } catch (_: Exception) {}
     }
 
-    // ── Measurement ─────────────────────────────────────────
-
     private fun measureAtPoint(x: Float, y: Float) {
         when (currentMode) {
             Mode.POINT -> handlePointTap(x, y)
@@ -245,7 +287,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun computeArea(pts: List<PointF>): Float {
         if (pts.size < 3) return 0f
         val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
-        if (cameraCtrl.hasDepthMap) {
+        if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
             val depths = pts.map { getDistanceAt(it.x, it.y) }
             if (depths.all { it != null && it > 0 }) {
                 val pts3d = pts.zip(depths).map { (p, d) ->
@@ -259,14 +301,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         return MeasurementEngine.computeFlatArea(pts.map{it.x}.toFloatArray(), pts.map{it.y}.toFloatArray(), avg, vw, getHfovDegrees())
     }
 
-    // ── UI ──────────────────────────────────────────────────
-
     private fun setupUI() {
-        binding.tvSensor.text = "${if (tofHelper.hasRealTof) "📐 " else "⚠️ "}${tofHelper.sensorLabel}" + if (imuHelper.isAvailable()) " +IMU" else ""
+        binding.tvSensor.text = "${if (tofHelper.hasRealTof) "ToF" else "AF"} ${tofHelper.sensorLabel}" + if (imuHelper.isAvailable()) " +IMU" else ""
         binding.btnPointMode.setOnClickListener { setMode(Mode.POINT) }
         binding.btnLineMode.setOnClickListener { setMode(Mode.LINE) }
         binding.btnAreaMode.setOnClickListener { setMode(Mode.AREA) }
         binding.btnSweepMode.setOnClickListener { setMode(Mode.SWEEP) }
+        binding.btnDepthToggle.setOnClickListener { toggleDepthCamera() }
         binding.btnReset.setOnClickListener {
             if (currentMode == Mode.AREA && overlayAreaPoints.isNotEmpty()) {
                 overlayAreaPoints.removeAt(overlayAreaPoints.size - 1)
@@ -281,11 +322,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         }
         binding.btnSave.setOnClickListener { saveMeasurement() }
         setMode(Mode.POINT)
+        updateDepthToggleButton()
     }
 
     private fun setMode(mode: Mode) {
         currentMode = mode; resetMeasurement()
-        binding.tvMode.text = when(mode) { Mode.POINT -> "📏 点击测距"; Mode.LINE -> "📐 两点测距"; Mode.AREA -> "⬜ 面积测量"; Mode.SWEEP -> "👆 扫掠测距" }
+        binding.tvMode.text = when(mode) { Mode.POINT -> "点击测距"; Mode.LINE -> "两点测距"; Mode.AREA -> "面积测量"; Mode.SWEEP -> "扫掠测距" }
         binding.overlayView.sweepMode = (mode == Mode.SWEEP)
         listOf(binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode).forEach { it.setBackgroundColor(0x00000000) }
         when(mode) { Mode.POINT -> binding.btnPointMode; Mode.LINE -> binding.btnLineMode; Mode.AREA -> binding.btnAreaMode; Mode.SWEEP -> binding.btnSweepMode }.setBackgroundColor(0x3300FF88.toInt())
@@ -305,8 +347,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val loc = IntArray(2); sv.getLocationInWindow(loc)
                 android.view.PixelCopy.request(window, Rect(loc[0], loc[1], loc[0]+sv.width, loc[1]+sv.height), bitmap,
-                    { r -> if (r == android.view.PixelCopy.SUCCESS) { val c = Canvas(bitmap); binding.overlayView.draw(c); try { android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult"); runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() } } catch (e: Exception) { runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() } } } }, Handler(mainLooper))
-            } else {
+                    { r -> if (r == android.view.PixelCopy.SUCCESS) { val c = Canvas(bitmap); binding.overlayView.draw(c); try { android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult"); runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() } } catch (e: Exception) { runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() } } } }, Handler(mainLooper)) }
+            else {
                 val c = Canvas(bitmap); c.drawColor(Color.BLACK); binding.overlayView.draw(c)
                 android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult")
                 Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
@@ -316,12 +358,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (cameraCtrl.cameraDevice == null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
-        else if (cameraCtrl.cameraDevice != null) cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, cameraCtrl.depthStreamActive)
+        else if (cameraCtrl.cameraDevice != null) cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, cameraCtrl.depthCameraEnabled && cameraCtrl.depthStreamActive)
     }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
     override fun surfaceDestroyed(holder: SurfaceHolder) {}
-
-    // ── DEPTH16 ─────────────────────────────────────────────
 
     private fun processDepthImage(reader: android.media.ImageReader) {
         val image = reader.acquireLatestImage() ?: return
@@ -347,7 +387,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             dy = (sy / vh * rgb.height() / rgb.height() * dep.height()).toInt().coerceIn(0, depthHeight - 1)
         } else { dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1); dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1) }
 
-        // 7x7 weighted kernel
         var wSum = 0.0; var wtSum = 0.0; var cnt = 0
         for (ddy in -3..3) for (ddx in -3..3) {
             val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
@@ -358,8 +397,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val filtered = depthFilter.filter((wSum / wtSum).toFloat())
         return if (filtered > 0) filtered / 10f else null
     }
-
-    // ── Background thread ───────────────────────────────────
 
     private fun startBackgroundThread() {
         if (backgroundThread?.isAlive == true) { backgroundThread?.quitSafely(); try { backgroundThread?.join(1000) } catch (_: Exception) {} }
