@@ -104,7 +104,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     override fun onPause() {
         tofHelper.unregisterListener(this); imuHelper.stop()
         cameraCtrl.close(); stopBackgroundThread()
+        // Clear depth data after camera is closed and callbacks are stopped
         depthBuffer = null; depthBufReusable = null
+        calibrating = false
         super.onPause()
     }
 
@@ -291,6 +293,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun handlePointTap(x: Float, y: Float) {
         overlayPoints.clear(); overlayPoints.add(PointF(x, y))
         val dist = getDistanceAt(x, y)
+        if (dist != null && dist > 0) lastRawCm = dist
         measuredResult = when { dist != null -> formatDistance(dist); tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"; else -> "对焦中..." }
         binding.tvDistance.text = measuredResult; updateOverlay()
         if (dist != null && dist > 0) saveToHistory(measuredResult, "单点")
@@ -364,7 +367,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun setMode(mode: Mode) {
-        currentMode = mode; resetMeasurement()
+        currentMode = mode; calibrating = false; resetMeasurement()
         binding.tvMode.text = when(mode) { Mode.POINT -> "点击测距"; Mode.LINE -> "两点测距"; Mode.AREA -> "面积测量"; Mode.SWEEP -> "扫掠测距" }
         binding.overlayView.sweepMode = (mode == Mode.SWEEP)
         listOf(binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode).forEach { it.setBackgroundColor(0x00000000) }
@@ -419,14 +422,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         }
     }
 
+    private var lastRawCm: Float = -1f  // store last raw cm value for unit re-display
+
     private fun cycleUnit() {
         currentUnit = when (currentUnit) { Unit.CM -> Unit.INCH; Unit.INCH -> Unit.M; Unit.M -> Unit.CM }
         val label = when (currentUnit) { Unit.CM -> "厘米"; Unit.INCH -> "英寸"; Unit.M -> "米" }
         Toast.makeText(this, "单位: $label", Toast.LENGTH_SHORT).show()
-        // Re-format current display
-        if (measuredResult != "--") {
-            // Trigger a re-measurement display update won't work since we don't have the raw value
-            // Just inform the user the unit changed for next measurement
+        if (lastRawCm > 0 && currentMode == Mode.POINT) {
+            measuredResult = formatDistance(lastRawCm)
+            binding.tvDistance.text = measuredResult
         }
     }
 
