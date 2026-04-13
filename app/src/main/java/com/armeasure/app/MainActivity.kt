@@ -137,25 +137,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             return
         }
         cameraOpening = true
-        cameraCtrl.depthCameraEnabled = !cameraCtrl.depthCameraEnabled
-        val enabled = cameraCtrl.depthCameraEnabled
-        updateDepthToggleButton()
-
         depthBuffer = null
 
-        cameraCtrl.reopenCamera(onReady = { same ->
+        cameraCtrl.toggleDepthCamera { enabled ->
             cameraOpening = false
-            val useSameDepth = same && cameraCtrl.depthCameraEnabled
-            if (binding.surfaceView.width > 0 && binding.surfaceView.holder.surface.isValid) {
-                cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, useSameDepth)
+            runOnUiThread {
+                updateDepthToggleButton()
+                updateSensorLabel()
+                val msg = if (enabled) "深度摄像头已开启" else "深度摄像头已关闭"
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
             }
-            updateSensorLabel()
-            val msg = if (enabled) "深度摄像头已开启" else "深度摄像头已关闭"
-            runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
-        }, onError = {
-            cameraOpening = false
-            runOnUiThread { Toast.makeText(this@MainActivity, "切换失败", Toast.LENGTH_SHORT).show() }
-        })
+        }
     }
 
     private fun updateDepthToggleButton() {
@@ -198,7 +190,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             runOnUiThread {
                 if (dist != null && dist > 0) {
                     binding.overlayView.sweepDistanceCm = dist
-                    sweepHistory.add(Pair(x, dist)); if (sweepHistory.size > maxSweepHistory) sweepHistory.removeAt(0)
+                    sweepHistory.add(Pair(x, dist)); if (sweepHistory.size > maxSweepHistory) { sweepHistory.removeAt(0); sweepHistory.removeAt(0) }
                     binding.overlayView.sweepHistory = sweepHistory.toList()
                     binding.tvDistance.text = String.format("%.1f cm", dist)
                 } else { binding.overlayView.sweepDistanceCm = -1f; binding.tvDistance.text = "扫描中..." }
@@ -297,7 +289,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 return MeasurementEngine.computePolygonArea(pts3d)
             }
         }
-        val avg = getDistanceAt(pts.map{it.x}.average().toFloat(), pts.map{it.y}.average().toFloat()) ?: return 0f
+        val cx = pts.map{it.x}.average().toFloat()
+        val cy = pts.map{it.y}.average().toFloat()
+        val avg = getDistanceAt(cx, cy) ?: return 0f
         return MeasurementEngine.computeFlatArea(pts.map{it.x}.toFloatArray(), pts.map{it.y}.toFloatArray(), avg, vw, getHfovDegrees())
     }
 
