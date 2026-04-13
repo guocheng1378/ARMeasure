@@ -70,11 +70,14 @@ class CameraController(
         torchOn = !torchOn
         try {
             val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            // Preserve all existing surfaces (preview + depth if active)
             req.addTarget(surfaceView.holder.surface)
+            if (depthStreamActive && depthReader != null) {
+                req.addTarget(depthReader!!.surface)
+            }
             req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            req.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
-            if (!torchOn) {
-                req.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+            if (torchOn) {
+                req.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
             }
             session.setRepeatingRequest(req.build(), captureCallback, backgroundHandler)
         } catch (e: Exception) {
@@ -373,10 +376,28 @@ class CameraController(
     fun openDepthOnly(onReady: () -> Unit) {
         val sel = lastSelection ?: return
         if (sel.depthId != null && sel.depthId != sel.rgbId) {
-            openDepthCamera(sel.depthId)
-            onReady()
+            // Wrap openDepthCamera callback to notify when actually ready
+            val origDepthId = sel.depthId
+            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) return
+            try {
+                cameraManager.openCamera(origDepthId, object : CameraDevice.StateCallback() {
+                    override fun onOpened(camera: CameraDevice) {
+                        depthCameraDevice = camera
+                        setupDepthOnlySession(camera)
+                        onReady()
+                    }
+                    override fun onDisconnected(camera: CameraDevice) {
+                        camera.close(); depthCameraDevice = null
+                    }
+                    override fun onError(camera: CameraDevice, error: Int) {
+                        Log.e(TAG, "Depth camera error: $error"); camera.close(); depthCameraDevice = null
+                    }
+                }, backgroundHandler)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to open depth camera", e)
+            }
         } else if (sel.sameCameraHasDepth && cameraDevice != null) {
-            // Same-camera depth: need to reconfigure preview session
             setupPreviewSession(cameraDevice!!, true)
             onReady()
         }
