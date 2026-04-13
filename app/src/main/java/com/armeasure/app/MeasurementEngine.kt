@@ -157,7 +157,7 @@ object MeasurementEngine {
         val sigma = mad * 1.4826
         val threshold = (madThreshold * sigma).toFloat()
         val filtered = valid.filter { Math.abs(it - median) <= threshold }
-        return if (filtered.size >= 2) filtered.sorted().median() else median
+        return if (filtered.size >= 2) filtered.median() else median
     }
 
     /**
