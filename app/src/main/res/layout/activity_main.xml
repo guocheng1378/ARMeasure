@@ -146,16 +146,6 @@
                 android:textSize="11sp" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnTorch"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_weight="1"
-                android:layout_marginHorizontal="4dp"
-                android:text="灯光"
-                android:textSize="11sp" />
-
-            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnUndo"
                 style="@style/Widget.Material3.Button.OutlinedButton"
                 android:layout_width="0dp"

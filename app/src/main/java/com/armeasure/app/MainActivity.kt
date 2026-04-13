@@ -127,10 +127,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         cameraCtrl.openCamera(selection, onReady = { same ->
             cameraOpening = false
             updateSensorLabel()
-            if (binding.surfaceView.width > 0 && binding.surfaceView.holder.surface.isValid) {
-                val useSameDepth = same && cameraCtrl.depthCameraEnabled
-                cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, useSameDepth)
-            }
+            // NOTE: openCamera() already calls setupPreviewSession() in its onOpened callback.
+            // Do NOT call setupPreviewSession() here again — it destroys+recreates the capture session,
+            // causing the preview to flash/switch back and forth.
         }, onError = { cameraOpening = false })
     }
 
@@ -355,7 +354,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.btnAreaMode.setOnClickListener { setMode(Mode.AREA) }
         binding.btnSweepMode.setOnClickListener { setMode(Mode.SWEEP) }
         binding.btnDepthToggle.setOnClickListener { toggleDepthCamera() }
-        binding.btnTorch.setOnClickListener { toggleTorch() }
         binding.btnUndo.setOnClickListener { undoLastPoint() }
         binding.btnCalibrate.setOnClickListener { startCalibration() }
         binding.btnHistory.setOnClickListener { showHistory() }
@@ -398,12 +396,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
-    }
-
-    private fun toggleTorch() {
-        cameraCtrl.toggleTorch()
-        binding.btnTorch.setBackgroundColor(if (cameraCtrl.torchOn) 0x33FFCC00.toInt() else 0x00000000)
-        binding.btnTorch.text = if (cameraCtrl.torchOn) "灯光:开" else "灯光"
     }
 
     private fun undoLastPoint() {
@@ -449,7 +441,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun performCalibration(sx: Float, sy: Float) {
         backgroundHandler?.post {
-            val measured = getDistanceAt(sx, sy)
+            // Multi-sample averaging for more stable calibration
+            val samples = mutableListOf<Float>()
+            for (i in 0 until 5) {
+                val d = getDistanceAt(sx, sy)
+                if (d != null && d > 0) samples.add(d)
+                Thread.sleep(150)
+            }
+            val measured = if (samples.isNotEmpty()) samples.sorted()[samples.size / 2] else null  // median
             runOnUiThread {
                 if (measured == null || measured <= 0) {
                     Toast.makeText(this, "无法获取距离，请重试", Toast.LENGTH_SHORT).show()
@@ -463,7 +462,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 }
                 android.app.AlertDialog.Builder(this)
                     .setTitle("校准: 当前测量 ${String.format("%.1f cm", measured)}")
-                    .setMessage("输入实际距离 (cm) 进行校准")
+                    .setMessage("输入实际距离 (cm) 进行校准\n(已取5次采样中位数)")
                     .setView(input)
                     .setPositiveButton("校准") { _, _ ->
                         val known = input.text.toString().toFloatOrNull()
@@ -573,7 +572,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (cameraCtrl.cameraDevice == null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
-        else if (cameraCtrl.cameraDevice != null) cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, cameraCtrl.depthCameraEnabled && cameraCtrl.depthStreamActive)
+        // Do NOT re-create capture session when camera is already open — it causes preview flicker.
+        // The session created in openCamera() is still valid.
     }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
     override fun surfaceDestroyed(holder: SurfaceHolder) {}
