@@ -59,6 +59,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
     private val sweepLock = Any()
+    private val depthCache = mutableMapOf<Int, Float>()
     private val maxSweepHistory = 200
 
     companion object {
@@ -216,14 +217,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
      * Returns both the robust depth and the sample standard deviation as uncertainty.
      */
     private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = 5, intervalMs: Long = 80): DepthResult? {
-        // Create a fresh filter per sampling session to avoid state contamination
-        // from previous measurement points (Kalman state belongs to this point only)
-        val localFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 2000f, maxRangeMm = 5000f, processNoise = 300f, initMeasureNoise = 300f)
         val samples = mutableListOf<Float>()
+        val intervalNs = intervalMs * 1_000_000L
         for (i in 0 until sampleCount) {
-            val d = getDistanceAt(sx, sy, depthFilterOverride = localFilter)
+            val d = getDistanceAt(sx, sy)
             if (d != null && d > 0) samples.add(d)
-            if (i < sampleCount - 1) Thread.sleep(intervalMs)
+            if (i < sampleCount - 1) {
+                val deadline = System.nanoTime() + intervalNs
+                while (System.nanoTime() < deadline) Thread.onSpinWait()
+            }
         }
         val robust = MeasurementEngine.robustDepth(samples) ?: return null
         // Standard deviation of valid samples as uncertainty
@@ -387,7 +389,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         } else {
             val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
             // Check IMU motion between two taps
-            val motion = if (imuHelper.isAvailable()) imuHelper.checkMotionSince() else null
+            val imuAvail = imuHelper.isAvailable()
+            val motion = if (imuAvail) imuHelper.checkMotionSince() else null
             val motionWarn = motion?.warning
             binding.tvDistance.text = "采样中(2/2)..."
             updateOverlay()
@@ -396,7 +399,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val d1 = firstDistance
                 val u1 = firstUncertainty
                 // Apply motion correction: reduce depth sensor confidence when device moved
-                val motionFactor = if (imuHelper.isAvailable()) imuHelper.getMotionCorrectionFactor() else 1f
+                val motionFactor = when {
+                    !imuAvail -> 1f
+                    motion != null -> when {
+                        motion.excessive -> 0.7f
+                        motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 0.9f
+                        else -> 1f
+                    }
+                    else -> 1f
+                }
                 val result2 = collectDepthSamples(x, y)
                 val d2 = (result2?.depthCm ?: d1) * motionFactor
                 val u2 = result2?.uncertaintyCm ?: 0f
@@ -428,7 +439,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handleAreaTap(x: Float, y: Float) {
         overlayAreaPoints.add(PointF(x, y))
-        if (overlayAreaPoints.size >= 3) { val area = computeArea(overlayAreaPoints); measuredResult = if (area > 0) formatArea(area) else "无法计算"; binding.tvDistance.text = measuredResult; if (area > 0) saveToHistory(measuredResult, "面积") }
+        if (overlayAreaPoints.size >= 3) { val area = computeArea(overlayAreaPoints, depthCache); measuredResult = if (area > 0) formatArea(area) else "无法计算"; binding.tvDistance.text = measuredResult; if (area > 0) saveToHistory(measuredResult, "面积") }
         else binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
         val lines = mutableListOf<Pair<PointF, PointF>>()
         for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i+1]))
@@ -439,11 +450,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun updateOverlay() { binding.overlayView.points = overlayPoints.toList(); binding.overlayView.areaPoints = emptyList(); binding.overlayView.invalidate() }
 
-    private fun computeArea(pts: List<PointF>): Float {
+    private fun computeArea(pts: List<PointF>, depthsCache: MutableMap<Int, Float>? = null): Float {
         if (pts.size < 3) return 0f
         val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
-            val depths = pts.map { getDistanceAt(it.x, it.y) }
+            // Use cached depths where available, only measure new points
+            val depths = pts.indices.map { i ->
+                depthsCache?.get(i) ?: run {
+                    val d = getDistanceAt(pts[i].x, pts[i].y)
+                    if (d != null && d > 0) { depthsCache?.put(i, d); d } else null
+                }
+            }
             if (depths.all { it != null && it > 0 }) {
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val pts3d = pts.zip(depths).map { (p, d) ->
@@ -499,7 +516,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun resetMeasurement() {
-        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
+        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null; depthCache.clear()
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList(); binding.overlayView.areaPoints = emptyList()
@@ -535,7 +552,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Mode.AREA -> {
                 if (overlayAreaPoints.isNotEmpty()) {
                     overlayAreaPoints.removeAt(overlayAreaPoints.size - 1)
-                    if (overlayAreaPoints.size >= 3) { val a = computeArea(overlayAreaPoints); measuredResult = if (a > 0) formatArea(a) else "无法计算"; binding.tvDistance.text = measuredResult }
+                    depthCache.remove(overlayAreaPoints.size)
+                    if (overlayAreaPoints.size >= 3) { val a = computeArea(overlayAreaPoints, depthCache); measuredResult = if (a > 0) formatArea(a) else "无法计算"; binding.tvDistance.text = measuredResult }
                     else { measuredResult = if (overlayAreaPoints.isEmpty()) "--" else "继续点击 (${overlayAreaPoints.size}/3+)"; binding.tvDistance.text = measuredResult }
                     val lines = mutableListOf<Pair<PointF, PointF>>()
                     for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i + 1]))
