@@ -390,6 +390,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList(); binding.overlayView.areaPoints = emptyList()
         binding.overlayView.showLineLabels = false; binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
+        // Reset filter states so next measurement starts fresh (not from old Kalman/ToF momentum)
+        depthFilter.reset()
+        tofHelper.reset()
+        currentFocusDistance = -1f
+        depthBuffer = null
         updateCalibrationUI()
         binding.overlayView.postInvalidate()
     }
