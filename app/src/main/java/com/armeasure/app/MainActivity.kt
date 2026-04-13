@@ -584,8 +584,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (cameraCtrl.cameraDevice == null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
-        // Do NOT re-create capture session when camera is already open — it causes preview flicker.
-        // The session created in openCamera() is still valid.
+        // Only set up preview if camera is open BUT no capture session yet
+        // (camera opened before surface was ready). Skip if session already exists
+        // to avoid destroying/recreating it (which causes preview flicker).
+        else if (cameraCtrl.cameraDevice != null && cameraCtrl.captureSession == null) {
+            cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, cameraCtrl.depthCameraEnabled && cameraCtrl.depthStreamActive)
+        }
     }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
     override fun surfaceDestroyed(holder: SurfaceHolder) {}
