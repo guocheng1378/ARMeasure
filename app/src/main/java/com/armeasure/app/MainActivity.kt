@@ -663,7 +663,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Unit.CM -> "cm"; Unit.INCH -> "in"; Unit.M -> "m"
         })
         measurementHistory.add(0, entry)
-        if (measurementHistory.size > 50) measurementHistory.removeLast()
+        if (measurementHistory.size > 50) measurementHistory.removeAt(measurementHistory.size - 1)
         persistHistory()
     }
 
