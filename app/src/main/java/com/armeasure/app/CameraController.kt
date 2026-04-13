@@ -19,10 +19,6 @@ import androidx.core.app.ActivityCompat
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
-/**
- * Manages Camera2 lifecycle: opening RGB + depth cameras, preview sessions,
- * depth-only sessions, and autofocus control.
- */
 class CameraController(
     private val context: Context,
     private val cameraManager: CameraManager,
@@ -33,7 +29,6 @@ class CameraController(
         private const val TAG = "CameraCtrl"
     }
 
-    // ── State ──────────────────────────────────────────────
     var cameraDevice: CameraDevice? = null
         private set
     var captureSession: CameraCaptureSession? = null
@@ -61,15 +56,15 @@ class CameraController(
     var depthHeight: Int = 0
         private set
 
+    var depthCameraEnabled: Boolean = false
+    var hasSeparateDepthCamera: Boolean = false
+        private set
+    private var lastSelection: CameraSelection? = null
+
     private val cameraOpenCloseLock = Semaphore(1)
 
-    // Callbacks set by owner
     var onDepthImageAvailable: ((ImageReader) -> Unit)? = null
     var captureCallback: CameraCaptureSession.CaptureCallback? = null
-
-    // ═══════════════════════════════════════════════════════════
-    // Camera Discovery
-    // ═══════════════════════════════════════════════════════════
 
     data class CameraSelection(
         val rgbId: String,
@@ -117,7 +112,6 @@ class CameraController(
             }
         }
 
-        // Prefer depth camera if it's also back-facing
         if (depthCamId != null && bestRgbId != null) {
             val depthChars = cameraManager.getCameraCharacteristics(depthCamId)
             val depthFacing = depthChars.get(CameraCharacteristics.LENS_FACING)
@@ -143,12 +137,10 @@ class CameraController(
         }
 
         hasDepthMap = depthCamId != null
-        return CameraSelection(rgbId, depthCamId, depthCamId == rgbId)
+        hasSeparateDepthCamera = depthCamId != null && depthCamId != rgbId
+        lastSelection = CameraSelection(rgbId, depthCamId, depthCamId == rgbId)
+        return lastSelection
     }
-
-    // ═══════════════════════════════════════════════════════════
-    // Open / Close
-    // ═══════════════════════════════════════════════════════════
 
     fun openCamera(selection: CameraSelection, onReady: (Boolean) -> Unit, onError: (() -> Unit)? = null) {
         if (ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
@@ -162,14 +154,15 @@ class CameraController(
                 cameraOpenCloseLock.release()
                 cameraDevice = camera
 
-                if (selection.depthId != null && selection.depthId != selection.rgbId) {
+                if (depthCameraEnabled && selection.depthId != null && selection.depthId != selection.rgbId) {
                     openDepthCamera(selection.depthId)
                 }
 
                 if (surfaceView.width > 0 && surfaceView.holder.surface.isValid) {
-                    setupPreviewSession(camera, selection.sameCameraHasDepth)
+                    val useSameCameraDepth = selection.sameCameraHasDepth && depthCameraEnabled
+                    setupPreviewSession(camera, useSameCameraDepth)
                 }
-                onReady(selection.sameCameraHasDepth)
+                onReady(selection.sameCameraHasDepth && depthCameraEnabled)
             }
 
             override fun onDisconnected(camera: CameraDevice) {
@@ -215,9 +208,11 @@ class CameraController(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // Sessions
-    // ═══════════════════════════════════════════════════════════
+    fun reopenCamera(onReady: (Boolean) -> Unit, onError: (() -> Unit)? = null) {
+        close()
+        val selection = lastSelection ?: selectCameras() ?: return
+        openCamera(selection, onReady, onError)
+    }
 
     fun setupPreviewSession(camera: CameraDevice, sameCameraHasDepth: Boolean) {
         try {
@@ -334,10 +329,6 @@ class CameraController(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // Cleanup
-    // ═══════════════════════════════════════════════════════════
-
     fun close() {
         try {
             cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)
@@ -351,10 +342,6 @@ class CameraController(
             cameraOpenCloseLock.release()
         }
     }
-
-    // ═══════════════════════════════════════════════════════════
-    // Helpers
-    // ═══════════════════════════════════════════════════════════
 
     private fun chooseOptimalSize(choices: Array<Size>, width: Int, height: Int): Size {
         if (choices.isEmpty()) return Size(1920, 1080)
