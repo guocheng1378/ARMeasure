@@ -59,7 +59,7 @@ class MeasureOverlayView @JvmOverloads constructor(
     private fun drawSweep(canvas: Canvas) {
         val cx = width / 2f; val cy = height / 2f
         if (sweepHistory.size >= 2) {
-            val tp = Path()
+            rPath.reset()
             val maxD = sweepHistory.maxOfOrNull { it.second } ?: 200f
             val minD = sweepHistory.minOfOrNull { it.second } ?: 0f
             val range = (maxD - minD).coerceAtLeast(50f)
@@ -67,9 +67,9 @@ class MeasureOverlayView @JvmOverloads constructor(
             for (i in sweepHistory.indices) {
                 val (sx, dist) = sweepHistory[i]
                 val py = cBot - ((dist - minD) / range) * (cBot - cTop)
-                if (i == 0) tp.moveTo(sx, py) else tp.lineTo(sx, py)
+                if (i == 0) rPath.moveTo(sx, py) else rPath.lineTo(sx, py)
             }
-            canvas.drawPath(tp, sweepTrailP)
+            canvas.drawPath(rPath, sweepTrailP)
         }
         canvas.drawLine(cx - 40, cy, cx + 40, cy, sweepCP)
         canvas.drawLine(cx, cy - 40, cx, cy + 40, sweepCP)
