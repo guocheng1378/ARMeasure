@@ -28,7 +28,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     @Volatile private var depthWidth: Int = 0
     @Volatile private var depthHeight: Int = 0
     private val depthLock = Any() // Fix #6: synchronize depth buffer access between BG and UI threads
-    private val depthFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 800f, maxRangeMm = 5000f)
+    private val depthFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 2000f, maxRangeMm = 5000f, processNoise = 300f, initMeasureNoise = 300f)
 
     private var backgroundHandler: Handler? = null
     private var backgroundThread: HandlerThread? = null

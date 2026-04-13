@@ -33,7 +33,8 @@ class TofSensorHelper(
         private set
 
     private val filter = DistanceFilter(
-        windowSize = 5, alpha = 0.4f, maxJumpMm = 800f, maxRangeMm = 5000f
+        windowSize = 5, alpha = 0.4f, maxJumpMm = 2000f, maxRangeMm = 5000f,
+        processNoise = 300f, initMeasureNoise = 300f
     )
     private var warmUpCount = 0
 
