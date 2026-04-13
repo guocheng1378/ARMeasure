@@ -112,19 +112,7 @@ class CameraController(
             }
         }
 
-        if (depthCamId != null && bestRgbId != null) {
-            val depthChars = cameraManager.getCameraCharacteristics(depthCamId)
-            val depthFacing = depthChars.get(CameraCharacteristics.LENS_FACING)
-            if (depthFacing == CameraCharacteristics.LENS_FACING_BACK) {
-                bestRgbId = depthCamId
-                val focalLengths = depthChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                val sensorPhysicalSize = depthChars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
-                if (focalLengths != null && sensorPhysicalSize != null) {
-                    focalLengthMm = focalLengths.firstOrNull() ?: focalLengthMm
-                    sensorSize = SizeF(sensorPhysicalSize.width, sensorPhysicalSize.height)
-                }
-            }
-        }
+        // Do NOT replace RGB preview camera with depth camera
 
         val rgbId = bestRgbId ?: ids.firstOrNull() ?: return null
 
