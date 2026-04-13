@@ -145,7 +145,7 @@ object MeasurementEngine {
      */
     fun robustDepth(samples: List<Float>, madThreshold: Double = 2.0): Float? {
         val valid = samples.filter { it > 0 }.sorted()
-        if (valid.size < 2) return valid.medianOrNull()
+        if (valid.size < 2) return null
 
         val median = valid.median()
         // MAD: median of absolute deviations from median
