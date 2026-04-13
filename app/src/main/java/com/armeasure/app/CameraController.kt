@@ -312,6 +312,7 @@ class CameraController(
                 requestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
             }
 
+            @Suppress("DEPRECATION")
             camera.createCaptureSession(
                 targets,
                 object : CameraCaptureSession.StateCallback() {
@@ -359,6 +360,7 @@ class CameraController(
             val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             requestBuilder.addTarget(depthReader!!.surface)
 
+            @Suppress("DEPRECATION")
             camera.createCaptureSession(
                 listOf(depthReader!!.surface),
                 object : CameraCaptureSession.StateCallback() {
@@ -452,3 +454,4 @@ class CameraController(
         } ?: choices.first()
     }
 }
+

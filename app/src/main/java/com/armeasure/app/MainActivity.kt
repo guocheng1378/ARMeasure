@@ -538,13 +538,43 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val loc = IntArray(2); sv.getLocationInWindow(loc)
                 android.view.PixelCopy.request(window, Rect(loc[0], loc[1], loc[0]+sv.width, loc[1]+sv.height), bitmap,
-                    { r -> if (r == android.view.PixelCopy.SUCCESS) { val c = Canvas(bitmap); binding.overlayView.draw(c); try { android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult"); runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() } } catch (e: Exception) { runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() } } } }, Handler(mainLooper)) }
+                    { r -> if (r == android.view.PixelCopy.SUCCESS) { val c = Canvas(bitmap); binding.overlayView.draw(c); saveBitmapToGallery(bitmap) } }, Handler(mainLooper)) }
             else {
                 val c = Canvas(bitmap); c.drawColor(Color.BLACK); binding.overlayView.draw(c)
-                android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, "ARMeasure_${System.currentTimeMillis()}", "Distance: $measuredResult")
-                Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
+                saveBitmapToGallery(bitmap)
             }
         } catch (e: Exception) { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun saveBitmapToGallery(bitmap: Bitmap) {
+        try {
+            val displayName = "ARMeasure_${System.currentTimeMillis()}"
+            val mimeType = "image/png"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, displayName)
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, mimeType)
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/ARMeasure")
+                    put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                if (uri != null) {
+                    contentResolver.openOutputStream(uri)?.use { os ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
+                    }
+                    values.clear()
+                    values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+                }
+                runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() }
+            } else {
+                @Suppress("DEPRECATION")
+                android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, displayName, "Distance: $measuredResult")
+                runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() }
+            }
+        } catch (e: Exception) {
+            runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+        }
     }
 
     private fun undoLastPoint() {
@@ -786,3 +816,4 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         backgroundThread?.quitSafely(); try { backgroundThread?.join(); backgroundThread = null; backgroundHandler = null } catch (_: Exception) {}
     }
 }
+
