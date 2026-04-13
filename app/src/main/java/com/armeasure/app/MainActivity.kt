@@ -89,7 +89,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     override fun onPause() {
         tofHelper.unregisterListener(this); imuHelper.stop()
-        cameraCtrl.close(); stopBackgroundThread(); super.onPause()
+        cameraCtrl.close(); stopBackgroundThread()
+        depthBuffer = null; depthBufReusable = null
+        super.onPause()
     }
 
     override fun onSensorChanged(event: SensorEvent) { tofHelper.onSensorEvent(event) }
@@ -170,13 +172,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         return raw
     }
 
+    private var cachedHfov: Double = Double.NaN
+    private var cachedVfov: Double = Double.NaN
+
     private fun getHfovDegrees(): Double {
+        if (!cachedHfov.isNaN()) return cachedHfov
         val s = cameraCtrl.sensorSize ?: return 65.0; val f = cameraCtrl.focalLengthMm.takeIf { it > 0 } ?: return 65.0
-        return 2 * Math.toDegrees(Math.atan(s.width / 2.0 / f))
+        cachedHfov = 2 * Math.toDegrees(Math.atan(s.width / 2.0 / f)); return cachedHfov
     }
     private fun getVfovDegrees(): Double {
+        if (!cachedVfov.isNaN()) return cachedVfov
         val s = cameraCtrl.sensorSize ?: return 50.0; val f = cameraCtrl.focalLengthMm.takeIf { it > 0 } ?: return 50.0
-        return 2 * Math.toDegrees(Math.atan(s.height / 2.0 / f))
+        cachedVfov = 2 * Math.toDegrees(Math.atan(s.height / 2.0 / f)); return cachedVfov
     }
 
     private fun onScreenTapped(x: Float, y: Float) {
@@ -328,7 +335,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun resetMeasurement() {
-        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null; depthFilter.reset(); tofHelper.reset(); imuHelper.reset()
+        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null; tofHelper.reset(); imuHelper.reset()
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList(); binding.overlayView.areaPoints = emptyList()
         binding.overlayView.showLineLabels = false; binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList(); binding.overlayView.invalidate()
@@ -357,12 +364,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
     override fun surfaceDestroyed(holder: SurfaceHolder) {}
 
+    private var depthBufReusable: ShortArray? = null
+
     private fun processDepthImage(reader: android.media.ImageReader) {
         val image = reader.acquireLatestImage() ?: return
         try {
             val plane = image.planes[0]; val buffer = plane.buffer
             val rs = plane.rowStride; val ps = plane.pixelStride; val w = image.width; val h = image.height
-            val buf = ShortArray(w * h)
+            val buf = depthBufReusable?.let { if (it.size == w * h) it else null } ?: ShortArray(w * h).also { depthBufReusable = it }
             for (row in 0 until h) { val rowStart = row * rs; for (col in 0 until w) { val bi = rowStart + col * ps; if (bi + 1 < buffer.capacity()) buf[row * w + col] = buffer.getShort(bi) } }
             depthBuffer = buf; depthWidth = w; depthHeight = h
         } catch (e: Exception) { Log.e(TAG, "depth err", e) } finally { image.close() }
@@ -377,8 +386,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val sep = cameraCtrl.depthCameraDevice?.id != cameraCtrl.cameraDevice?.id
         if (sep && cameraCtrl.depthSensorActiveArray != null && cameraCtrl.rgbSensorActiveArray != null) {
             val rgb = cameraCtrl.rgbSensorActiveArray!!; val dep = cameraCtrl.depthSensorActiveArray!!
-            dx = (sx / vw * rgb.width() / rgb.width() * dep.width()).toInt().coerceIn(0, depthWidth - 1)
-            dy = (sy / vh * rgb.height() / rgb.height() * dep.height()).toInt().coerceIn(0, depthHeight - 1)
+            dx = (sx / vw * dep.width()).toInt().coerceIn(0, depthWidth - 1)
+            dy = (sy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
         } else { dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1); dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1) }
 
         var wSum = 0.0; var wtSum = 0.0; var cnt = 0
