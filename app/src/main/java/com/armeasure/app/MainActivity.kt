@@ -72,6 +72,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         }
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        startBackgroundThread()  // Must start before CameraController so backgroundHandler is ready
         val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val sm = getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
         cameraCtrl = CameraController(this, cm, backgroundHandler, binding.surfaceView)
@@ -100,7 +101,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         super.onResume()
         startBackgroundThread(); cameraCtrl.backgroundHandler = backgroundHandler
         tofHelper.registerListener(this); imuHelper.start()
-        if (cameraCtrl.cameraDevice == null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
+        if (cameraCtrl.cameraDevice == null && cameraCtrl.captureSession == null
+            && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
     }
 
     override fun onPause() {
