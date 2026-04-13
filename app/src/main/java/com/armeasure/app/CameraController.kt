@@ -176,7 +176,11 @@ class CameraController(
                         openDepthCamera(selection.depthId)
                     }
 
-                    if (surfaceView.width > 0 && surfaceView.holder.surface.isValid) {
+                    // Use surface validity as the gate, NOT surfaceView.width.
+                    // width may still be 0 before the first layout pass, but the surface
+                    // holder is already valid. Using width > 0 causes the preview session
+                    // to be skipped when camera opens before layout completes.
+                    if (surfaceView.holder.surface.isValid) {
                         val useSameCameraDepth = selection.sameCameraHasDepth && depthCameraEnabled
                         setupPreviewSession(camera, useSameCameraDepth)
                     }
