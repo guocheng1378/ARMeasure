@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -46,26 +48,50 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
 
+      - name: Generate version tag
+        if: github.event_name == 'push'
+        id: version
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          IFS='.' read -r major minor patch <<< "${LAST_TAG#v}"
+          NEW_TAG="v${major}.$((minor + 1)).${patch}"
+          echo "tag=${NEW_TAG}" >> $GITHUB_OUTPUT
+          echo "prev=${LAST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        if: github.event_name == 'push'
+        id: changelog
+        run: |
+          PREV=${{ steps.version.outputs.prev }}
+          if [ "$PREV" = "v0.0.0" ]; then
+            LOG=$(git log --oneline -10 --no-merges)
+          else
+            LOG=$(git log --oneline ${PREV}..HEAD --no-merges)
+          fi
+          # Write multiline output
+          {
+            echo 'log<<EOF'
+            echo "$LOG"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
       - name: Create Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.run_number }}
-          name: "ARMeasure v${{ github.run_number }}"
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "ARMeasure ${{ steps.version.outputs.tag }}"
           body: |
-            📱 **AR测距 App 自动构建**
+            📱 **AR测距 App ${{ steps.version.outputs.tag }}**
 
-            ### 功能
-            - 单点测距 (dToF 深度值)
-            - 两点测距 (3D 距离)
-            - 面积测量
+            ### 最近改动
+            ```
+            ${{ steps.changelog.outputs.log }}
+            ```
 
             ### 要求
             - Android 8.0+ (API 26+)
             - 支持 dToF 深度传感器的设备
-
-            ### Commit
-            ${{ github.sha }}
           files: app/build/outputs/apk/debug/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

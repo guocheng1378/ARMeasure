@@ -218,17 +218,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
      */
     private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = 5, intervalMs: Long = 80): DepthResult? {
         val samples = mutableListOf<Float>()
-        val intervalNs = intervalMs * 1_000_000L
         for (i in 0 until sampleCount) {
             val d = getDistanceAt(sx, sy)
             if (d != null && d > 0) samples.add(d)
-            if (i < sampleCount - 1) {
-                val deadline = System.nanoTime() + intervalNs
-                if (Build.VERSION.SDK_INT >= 33) { while (System.nanoTime() < deadline) Thread.onSpinWait() } else { while (System.nanoTime() < deadline) Thread.sleep(0, 1) }
-            }
+            if (i < sampleCount - 1) Thread.sleep(intervalMs)
         }
         val robust = MeasurementEngine.robustDepth(samples) ?: return null
-        // Standard deviation of valid samples as uncertainty
         val unc = if (samples.size >= 2) {
             val mean = samples.average().toFloat()
             val variance = samples.sumOf { ((it - mean) * (it - mean)).toDouble() } / (samples.size - 1)
@@ -289,7 +284,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 if (dist != null && dist > 0) {
                     binding.overlayView.sweepDistanceCm = dist
                     synchronized(sweepLock) {
-                        sweepHistory.add(Pair(x, dist)); if (sweepHistory.size > maxSweepHistory) { sweepHistory.removeAt(0); sweepHistory.removeAt(0) }
+                        sweepHistory.add(Pair(x, dist))
+                        if (sweepHistory.size > maxSweepHistory) {
+                            sweepHistory.removeAt(0)
+                            sweepHistory.removeAt(0)
+                        }
                         binding.overlayView.sweepHistory = sweepHistory.toList()
                     }
                     binding.tvDistance.text = formatDistance(dist)
@@ -314,10 +313,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 req.addTarget(cameraCtrl.depthReader!!.surface)
             }
             req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-            req.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region)); req.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+            req.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+            req.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
             session.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
-                    val fd = result.get(CaptureResult.LENS_FOCUS_DISTANCE); if (fd != null && fd > 0) currentFocusDistance = 1f / fd
+                    val fd = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                    if (fd != null && fd > 0) currentFocusDistance = 1f / fd
                     try {
                         val res = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW); res.addTarget(sv.holder.surface)
                         // Fix #3: restore depth surface in repeating request
@@ -439,7 +440,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handleAreaTap(x: Float, y: Float) {
         overlayAreaPoints.add(PointF(x, y))
-        if (overlayAreaPoints.size >= 3) { val area = computeArea(overlayAreaPoints, depthCache); measuredResult = if (area > 0) formatArea(area) else "无法计算"; binding.tvDistance.text = measuredResult; if (area > 0) saveToHistory(measuredResult, "面积") }
+        if (overlayAreaPoints.size >= 3) {
+            val area = computeArea(overlayAreaPoints, depthCache)
+            measuredResult = if (area > 0) formatArea(area) else "无法计算"
+            binding.tvDistance.text = measuredResult
+            if (area > 0) saveToHistory(measuredResult, "面积")
+        }
         else binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
         val lines = mutableListOf<Pair<PointF, PointF>>()
         for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i+1]))
@@ -448,7 +454,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.points = overlayAreaPoints.toList(); binding.overlayView.areaPoints = overlayAreaPoints.toList(); binding.overlayView.invalidate()
     }
 
-    private fun updateOverlay() { binding.overlayView.points = overlayPoints.toList(); binding.overlayView.areaPoints = emptyList(); binding.overlayView.invalidate() }
+    private fun updateOverlay() {
+        binding.overlayView.points = overlayPoints.toList()
+        binding.overlayView.areaPoints = emptyList()
+        binding.overlayView.invalidate()
+    }
 
     private fun computeArea(pts: List<PointF>, depthsCache: MutableMap<Int, Float>? = null): Float {
         if (pts.size < 3) return 0f
@@ -509,18 +519,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun setMode(mode: Mode) {
         currentMode = mode; calibrating = false; resetMeasurement()
-        binding.tvMode.text = when(mode) { Mode.POINT -> "点击测距"; Mode.LINE -> "两点测距"; Mode.AREA -> "面积测量"; Mode.SWEEP -> "扫掠测距" }
+        binding.tvMode.text = when (mode) {
+            Mode.POINT -> "点击测距"
+            Mode.LINE -> "两点测距"
+            Mode.AREA -> "面积测量"
+            Mode.SWEEP -> "扫掠测距"
+        }
         binding.overlayView.sweepMode = (mode == Mode.SWEEP)
         listOf(binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode).forEach { it.setBackgroundColor(0x00000000) }
-        when(mode) { Mode.POINT -> binding.btnPointMode; Mode.LINE -> binding.btnLineMode; Mode.AREA -> binding.btnAreaMode; Mode.SWEEP -> binding.btnSweepMode }.setBackgroundColor(0x3300FF88.toInt())
+        when (mode) {
+            Mode.POINT -> binding.btnPointMode
+            Mode.LINE -> binding.btnLineMode
+            Mode.AREA -> binding.btnAreaMode
+            Mode.SWEEP -> binding.btnSweepMode
+        }.setBackgroundColor(0x3300FF88.toInt())
     }
 
     private fun resetMeasurement() {
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null; depthCache.clear()
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
         measuredResult = "--"; binding.tvDistance.text = "--"
-        binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList(); binding.overlayView.areaPoints = emptyList()
-        binding.overlayView.showLineLabels = false; binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
+        binding.overlayView.points = emptyList()
+        binding.overlayView.lines = emptyList()
+        binding.overlayView.areaPoints = emptyList()
+        binding.overlayView.showLineLabels = false
+        binding.overlayView.sweepDistanceCm = -1f
+        binding.overlayView.sweepHistory = emptyList()
         // Reset filter states so next measurement starts fresh (not from old Kalman/ToF momentum)
         depthFilter.reset()
         tofHelper.reset()
@@ -532,7 +556,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun saveMeasurement() {
-        if (measuredResult == "--" || measuredResult.contains("无")) { Toast.makeText(this, "请先进行测量", Toast.LENGTH_SHORT).show(); return }
+        if (measuredResult == "--" || measuredResult.contains("无")) {
+            Toast.makeText(this, "请先进行测量", Toast.LENGTH_SHORT).show()
+            return
+        }
         try {
             val sv = binding.surfaceView; val bitmap = Bitmap.createBitmap(sv.width, sv.height, Bitmap.Config.ARGB_8888)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -583,16 +610,30 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 if (overlayAreaPoints.isNotEmpty()) {
                     overlayAreaPoints.removeAt(overlayAreaPoints.size - 1)
                     depthCache.remove(overlayAreaPoints.size)
-                    if (overlayAreaPoints.size >= 3) { val a = computeArea(overlayAreaPoints, depthCache); measuredResult = if (a > 0) formatArea(a) else "无法计算"; binding.tvDistance.text = measuredResult }
-                    else { measuredResult = if (overlayAreaPoints.isEmpty()) "--" else "继续点击 (${overlayAreaPoints.size}/3+)"; binding.tvDistance.text = measuredResult }
+                    if (overlayAreaPoints.size >= 3) {
+                        val a = computeArea(overlayAreaPoints, depthCache)
+                        measuredResult = if (a > 0) formatArea(a) else "无法计算"
+                        binding.tvDistance.text = measuredResult
+                    } else {
+                        measuredResult = if (overlayAreaPoints.isEmpty()) "--" else "继续点击 (${overlayAreaPoints.size}/3+)"
+                        binding.tvDistance.text = measuredResult
+                    }
                     val lines = mutableListOf<Pair<PointF, PointF>>()
                     for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i + 1]))
                     if (overlayAreaPoints.size >= 3) lines.add(Pair(overlayAreaPoints.last(), overlayAreaPoints.first()))
                     binding.overlayView.lines = lines; binding.overlayView.showLineLabels = false
-                    binding.overlayView.points = overlayAreaPoints.toList(); binding.overlayView.areaPoints = overlayAreaPoints.toList(); binding.overlayView.invalidate()
+                    binding.overlayView.points = overlayAreaPoints.toList()
+                    binding.overlayView.areaPoints = overlayAreaPoints.toList()
+                    binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; updateOverlay() }
+            Mode.LINE -> {
+                firstPoint = null
+                firstUncertainty = 0f
+                overlayPoints.clear()
+                binding.tvDistance.text = "--"
+                updateOverlay()
+            }
             else -> resetMeasurement()
         }
     }
@@ -656,7 +697,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                             Toast.makeText(this, "校准完成 (x${String.format("%.3f", calibrationFactor)})", Toast.LENGTH_SHORT).show()
                         }
                     }
-                    .setNegativeButton("取消") { _, _ -> calibrating = false; updateCalibrationUI(); setMode(currentMode) }
+                    .setNegativeButton("取消") { _, _ ->
+                        calibrating = false
+                        updateCalibrationUI()
+                        setMode(currentMode)
+                    }
                     .show()
             }
         }
@@ -771,7 +816,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val rs = plane.rowStride; val ps = plane.pixelStride; val w = image.width; val h = image.height
             synchronized(depthLock) {
                 val buf = depthBufReusable?.let { if (it.size == w * h) it else null } ?: ShortArray(w * h).also { depthBufReusable = it }
-                for (row in 0 until h) { val rowStart = row * rs; for (col in 0 until w) { val bi = rowStart + col * ps; if (bi + 1 < buffer.capacity()) buf[row * w + col] = buffer.getShort(bi) } }
+                for (row in 0 until h) {
+                    val rowStart = row * rs
+                    for (col in 0 until w) {
+                        val bi = rowStart + col * ps
+                        if (bi + 1 < buffer.capacity()) buf[row * w + col] = buffer.getShort(bi)
+                    }
+                }
                 depthBuffer = buf; depthWidth = w; depthHeight = h
             }
         } catch (e: Exception) { Log.e(TAG, "depth err", e) } finally { image.close() }
@@ -789,7 +840,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val rgb = cameraCtrl.rgbSensorActiveArray!!; val dep = cameraCtrl.depthSensorActiveArray!!
                 dx = (sx / vw * dep.width()).toInt().coerceIn(0, depthWidth - 1)
                 dy = (sy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
-            } else { dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1); dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1) }
+            } else {
+                dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1)
+                dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1)
+            }
 
             // Adaptive window: smaller for low-res depth maps to avoid neighboring object contamination
             // DEPTH16 is typically 240x180 or smaller → use radius 1 (3x3)
@@ -800,7 +854,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             for (ddy in -radius..radius) for (ddx in -radius..radius) {
                 val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
                 val raw = buf[py*depthWidth+px].toInt() and 0xFFFF
-                if (raw in 1..65533) { val d2 = (ddx*ddx+ddy*ddy).toFloat(); val w = 1f/(1f+d2); wSum += raw*w; wtSum += w; cnt++ }
+                if (raw in 1..65533) {
+                    val d2 = (ddx * ddx + ddy * ddy).toFloat()
+                    val w = 1f / (1f + d2)
+                    wSum += raw * w
+                    wtSum += w
+                    cnt++
+                }
             }
             if (cnt < 3) return null
             val filtered = filter.filter((wSum / wtSum).toFloat())
@@ -809,11 +869,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun startBackgroundThread() {
-        if (backgroundThread?.isAlive == true) { backgroundThread?.quitSafely(); try { backgroundThread?.join(1000) } catch (_: Exception) {} }
+        if (backgroundThread?.isAlive == true) {
+            backgroundThread?.quitSafely()
+            try { backgroundThread?.join(1000) } catch (_: Exception) {}
+        }
         backgroundThread = HandlerThread("CameraBG").also { it.start() }; backgroundHandler = Handler(backgroundThread!!.looper)
     }
     private fun stopBackgroundThread() {
         backgroundThread?.quitSafely(); try { backgroundThread?.join(); backgroundThread = null; backgroundHandler = null } catch (_: Exception) {}
     }
 }
+
 
