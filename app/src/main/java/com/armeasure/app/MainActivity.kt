@@ -36,6 +36,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private enum class Mode { POINT, LINE, AREA, SWEEP }
     private enum class Unit { CM, INCH, M }
     private var currentUnit = Unit.CM
+
+    // Calibration
+    private var calibrationFactor = 1.0f
+    private var isCalibrated = false
+    private var calibrating = false
+
+    // History
+    private val historyPrefs by lazy { getSharedPreferences("armeasure_history", MODE_PRIVATE) }
+    private val measurementHistory = mutableListOf<HistoryEntry>()
+    data class HistoryEntry(val timestamp: Long, val mode: String, val result: String, val unit: String)
     private var currentMode = Mode.POINT
     @Volatile private var cameraOpening = false
 
@@ -70,6 +80,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.surfaceView.holder.addCallback(this)
         tofHelper.detect()
         setupUI()
+        loadCalibration()
+        loadHistory()
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
         }
@@ -167,6 +179,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy)
         if (raw == null || raw <= 0) raw = tofHelper.getDistanceCm()
         if (raw == null || raw <= 0) { val d = currentFocusDistance; if (d > 0) raw = d * 100f }
+        if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
         if (raw != null && raw > 0 && imuHelper.isAvailable()) {
             val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
             return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh) else imuHelper.compensateDepth(raw)
@@ -212,6 +225,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun onScreenTapped(x: Float, y: Float) {
         triggerAutoFocus(x, y); haptic()
+        if (calibrating) {
+            backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, 300)
+            return
+        }
         backgroundHandler?.postDelayed({ runOnUiThread { measureAtPoint(x, y) } }, 300)
     }
 
@@ -276,6 +293,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val dist = getDistanceAt(x, y)
         measuredResult = when { dist != null -> formatDistance(dist); tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"; else -> "对焦中..." }
         binding.tvDistance.text = measuredResult; updateOverlay()
+        if (dist != null && dist > 0) saveToHistory(measuredResult, "单点")
     }
 
     private fun handleLineTap(x: Float, y: Float) {
@@ -291,12 +309,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             measuredResult = formatDistance(dist); binding.tvDistance.text = measuredResult
             binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
             updateOverlay(); firstPoint = null
+            saveToHistory(measuredResult, "两点")
         }
     }
 
     private fun handleAreaTap(x: Float, y: Float) {
         overlayAreaPoints.add(PointF(x, y))
-        if (overlayAreaPoints.size >= 3) { val area = computeArea(overlayAreaPoints); measuredResult = if (area > 0) formatArea(area) else "无法计算"; binding.tvDistance.text = measuredResult }
+        if (overlayAreaPoints.size >= 3) { val area = computeArea(overlayAreaPoints); measuredResult = if (area > 0) formatArea(area) else "无法计算"; binding.tvDistance.text = measuredResult; if (area > 0) saveToHistory(measuredResult, "面积") }
         else binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
         val lines = mutableListOf<Pair<PointF, PointF>>()
         for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i+1]))
@@ -335,6 +354,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.btnDepthToggle.setOnClickListener { toggleDepthCamera() }
         binding.btnTorch.setOnClickListener { toggleTorch() }
         binding.btnUndo.setOnClickListener { undoLastPoint() }
+        binding.btnCalibrate.setOnClickListener { startCalibration() }
+        binding.btnHistory.setOnClickListener { showHistory() }
         binding.tvDistance.setOnLongClickListener { cycleUnit(); true }
         binding.btnReset.setOnClickListener { resetMeasurement() }
         binding.btnSave.setOnClickListener { saveMeasurement() }
@@ -407,6 +428,140 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             // Trigger a re-measurement display update won't work since we don't have the raw value
             // Just inform the user the unit changed for next measurement
         }
+    }
+
+    // ── Calibration ──────────────────────────────────────────
+
+    private fun startCalibration() {
+        if (calibrating) { calibrating = false; updateCalibrationUI(); return }
+        calibrating = true
+        binding.tvDistance.text = "对准目标后点击屏幕"
+        binding.tvMode.text = "校准模式"
+        updateCalibrationUI()
+    }
+
+    private fun performCalibration(sx: Float, sy: Float) {
+        backgroundHandler?.post {
+            val measured = getDistanceAt(sx, sy)
+            runOnUiThread {
+                if (measured == null || measured <= 0) {
+                    Toast.makeText(this, "无法获取距离，请重试", Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                // Ask user for known distance
+                val input = android.widget.EditText(this).apply {
+                    inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    hint = "已知距离 (cm)"
+                    setText(String.format("%.0f", measured))
+                }
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("校准: 当前测量 ${String.format("%.1f cm", measured)}")
+                    .setMessage("输入实际距离 (cm) 进行校准")
+                    .setView(input)
+                    .setPositiveButton("校准") { _, _ ->
+                        val known = input.text.toString().toFloatOrNull()
+                        if (known != null && known > 0) {
+                            calibrationFactor = known / measured
+                            isCalibrated = true
+                            calibrating = false
+                            saveCalibration()
+                            updateCalibrationUI()
+                            setMode(currentMode) // restore mode display
+                            Toast.makeText(this, "校准完成 (x${String.format("%.3f", calibrationFactor)})", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .setNegativeButton("取消") { _, _ -> calibrating = false; updateCalibrationUI(); setMode(currentMode) }
+                    .show()
+            }
+        }
+    }
+
+    private fun loadCalibration() {
+        val prefs = getSharedPreferences("armeasure_cal", MODE_PRIVATE)
+        calibrationFactor = prefs.getFloat("factor", 1.0f)
+        isCalibrated = prefs.getBoolean("calibrated", false)
+        updateCalibrationUI()
+    }
+
+    private fun saveCalibration() {
+        getSharedPreferences("armeasure_cal", MODE_PRIVATE).edit()
+            .putFloat("factor", calibrationFactor)
+            .putBoolean("calibrated", isCalibrated)
+            .apply()
+    }
+
+    private fun updateCalibrationUI() {
+        if (isCalibrated) {
+            binding.tvCalibration.text = "x${String.format("%.3f", calibrationFactor)}"
+            binding.tvCalibration.setTextColor(Color.parseColor("#00FF88"))
+        } else {
+            binding.tvCalibration.text = ""
+        }
+        binding.btnCalibrate.setBackgroundColor(if (calibrating) 0x33FFCC00.toInt() else 0x00000000)
+    }
+
+    // ── History ──────────────────────────────────────────────
+
+    private fun saveToHistory(result: String, modeStr: String) {
+        val entry = HistoryEntry(System.currentTimeMillis(), modeStr, result, when(currentUnit) {
+            Unit.CM -> "cm"; Unit.INCH -> "in"; Unit.M -> "m"
+        })
+        measurementHistory.add(0, entry)
+        if (measurementHistory.size > 50) measurementHistory.removeLast()
+        persistHistory()
+    }
+
+    private fun persistHistory() {
+        val json = jsonArrayOf(measurementHistory.map {
+            jsonObjectOf("t" to it.timestamp, "m" to it.mode, "r" to it.result, "u" to it.unit)
+        })
+        historyPrefs.edit().putString("data", json.toString()).apply()
+    }
+
+    private fun loadHistory() {
+        try {
+            val raw = historyPrefs.getString("data", "[]") ?: "[]"
+            val arr = org.json.JSONArray(raw)
+            measurementHistory.clear()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                measurementHistory.add(HistoryEntry(o.getLong("t"), o.getString("m"), o.getString("r"), o.getString("u")))
+            }
+        } catch (_: Exception) { measurementHistory.clear() }
+    }
+
+    private fun showHistory() {
+        if (measurementHistory.isEmpty()) {
+            Toast.makeText(this, "暂无测量记录", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val items = measurementHistory.map { e ->
+            val time = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(e.timestamp))
+            "$time  [${e.mode}]  ${e.result}"
+        }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("测量记录 (${measurementHistory.size})")
+            .setItems(items, null)
+            .setNeutralButton("清空") { _, _ ->
+                measurementHistory.clear(); persistHistory()
+                Toast.makeText(this, "已清空", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    // ── Helpers for JSON ─────────────────────────────────────
+
+    private fun jsonObjectOf(vararg pairs: Pair<String, Any>): org.json.JSONObject {
+        val obj = org.json.JSONObject()
+        for ((k, v) in pairs) obj.put(k, v)
+        return obj
+    }
+
+    private fun jsonArrayOf(items: List<org.json.JSONObject>): org.json.JSONArray {
+        val arr = org.json.JSONArray()
+        items.forEach { arr.put(it) }
+        return arr
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
