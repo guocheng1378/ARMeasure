@@ -39,18 +39,37 @@ object MeasurementEngine {
     }
 
     /**
-     * Compute polygon area in cm² using per-point 3D coordinates.
+     * Compute true 3D surface area of a polygon in cm².
+     * Each point has (px, py, depth) where px/py are horizontal/vertical offsets from camera center,
+     * and depth is the measured distance along the view direction.
+     * Uses Newell's method (cross product of edge vectors) to get the actual surface area,
+     * not just the 2D projected area.
      */
-    fun computePolygonArea(pts3d: List<Pair<Float, Float>>): Float {
+    fun computePolygonArea3D(pts3d: List<Triple<Float, Float, Float>>): Float {
         if (pts3d.size < 3) return 0f
-        var area = 0.0
+        var nx = 0.0; var ny = 0.0; var nz = 0.0
         val n = pts3d.size
         for (i in 0 until n) {
             val j = (i + 1) % n
-            area += pts3d[i].first * pts3d[j].second
-            area -= pts3d[j].first * pts3d[i].second
+            nx += (pts3d[i].second * pts3d[j].third - pts3d[j].second * pts3d[i].third)
+            ny += (pts3d[i].third * pts3d[j].first - pts3d[j].third * pts3d[i].first)
+            nz += (pts3d[i].first * pts3d[j].second - pts3d[j].first * pts3d[i].second)
         }
-        return Math.abs(area / 2.0).toFloat()
+        return (sqrt(nx * nx + ny * ny + nz * nz) / 2.0).toFloat()
+    }
+
+    /**
+     * Legacy 2D polygon area (shoelace formula on projected coordinates).
+     */
+    fun computePolygonArea(pts3d: List<Pair<Float, Float>>): Float {
+        if (pts3d.size < 3) return 0f
+        var nz = 0.0
+        val n = pts3d.size
+        for (i in 0 until n) {
+            val j = (i + 1) % n
+            nz += pts3d[i].first * pts3d[j].second - pts3d[j].first * pts3d[i].second
+        }
+        return (Math.abs(nz) / 2.0).toFloat()
     }
 
     /**

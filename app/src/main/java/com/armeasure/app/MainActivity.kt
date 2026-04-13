@@ -231,10 +231,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun onScreenTapped(x: Float, y: Float) {
         triggerAutoFocus(x, y); haptic()
         if (calibrating) {
-            backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, 300)
+            backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, 600)
             return
         }
-        backgroundHandler?.postDelayed({ runOnUiThread { measureAtPoint(x, y) } }, 300)
+        backgroundHandler?.postDelayed({ runOnUiThread { measureAtPoint(x, y) } }, 600)
     }
 
     private fun onSweepMoved(x: Float, y: Float) {
@@ -351,9 +351,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             if (depths.all { it != null && it > 0 }) {
                 val pts3d = pts.zip(depths).map { (p, d) ->
                     val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
-                    Pair(d!! * Math.tan(nx * Math.toRadians(getHfovDegrees()) / 2).toFloat(), d * Math.tan(ny * Math.toRadians(getVfovDegrees()) / 2).toFloat())
+                    val px = d!! * Math.tan(nx * Math.toRadians(getHfovDegrees()) / 2).toFloat()
+                    val py = d * Math.tan(ny * Math.toRadians(getVfovDegrees()) / 2).toFloat()
+                    Triple(px, py, d)  // 3D point: horizontal offset, vertical offset, depth
                 }
-                return MeasurementEngine.computePolygonArea(pts3d)
+                return MeasurementEngine.computePolygonArea3D(pts3d)
             }
         }
         val cx = pts.map{it.x}.average().toFloat()
