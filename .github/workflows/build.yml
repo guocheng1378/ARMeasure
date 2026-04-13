@@ -8,6 +8,7 @@ on:
       - 'build.gradle.kts'
       - 'app/build.gradle.kts'
       - 'gradle/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
@@ -49,7 +50,7 @@ jobs:
           retention-days: 30
 
       - name: Generate version tag
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         id: version
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0")
@@ -64,7 +65,7 @@ jobs:
           echo "prev=${LAST_TAG}" >> $GITHUB_OUTPUT
 
       - name: Generate changelog
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         id: changelog
         run: |
           PREV=${{ steps.version.outputs.prev }}
@@ -80,7 +81,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Create Release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
