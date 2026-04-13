@@ -61,6 +61,28 @@ class CameraController(
         private set
     private var lastSelection: CameraSelection? = null
 
+    var torchOn: Boolean = false
+        private set
+
+    fun toggleTorch() {
+        val session = captureSession ?: return
+        val device = cameraDevice ?: return
+        torchOn = !torchOn
+        try {
+            val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            req.addTarget(surfaceView.holder.surface)
+            req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            req.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+            if (!torchOn) {
+                req.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+            }
+            session.setRepeatingRequest(req.build(), captureCallback, backgroundHandler)
+        } catch (e: Exception) {
+            torchOn = !torchOn
+            Log.e(TAG, "Torch toggle failed", e)
+        }
+    }
+
     private val cameraOpenCloseLock = Semaphore(1)
 
     var onDepthImageAvailable: ((ImageReader) -> Unit)? = null
@@ -262,6 +284,9 @@ class CameraController(
                 CaptureRequest.CONTROL_AF_MODE,
                 CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
             )
+            if (torchOn) {
+                requestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+            }
 
             camera.createCaptureSession(
                 targets,
@@ -362,7 +387,7 @@ class CameraController(
             captureSession?.close(); captureSession = null
             depthReader?.close(); depthReader = null
             depthCameraDevice?.close(); depthCameraDevice = null
-            cameraDevice?.close(); cameraDevice = null
+            cameraDevice?.close(); cameraDevice = null; torchOn = false
         } catch (_: InterruptedException) {
         } catch (_: Exception) {
         } finally {
