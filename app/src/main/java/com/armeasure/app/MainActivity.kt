@@ -224,7 +224,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             if (d != null && d > 0) samples.add(d)
             if (i < sampleCount - 1) {
                 val deadline = System.nanoTime() + intervalNs
-                while (System.nanoTime() < deadline) Thread.onSpinWait()
+                if (Build.VERSION.SDK_INT >= 33) { while (System.nanoTime() < deadline) Thread.onSpinWait() } else { while (System.nanoTime() < deadline) Thread.sleep(0, 1) }
             }
         }
         val robust = MeasurementEngine.robustDepth(samples) ?: return null
