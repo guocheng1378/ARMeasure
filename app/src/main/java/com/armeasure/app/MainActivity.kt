@@ -356,7 +356,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val cx = pts.map{it.x}.average().toFloat()
         val cy = pts.map{it.y}.average().toFloat()
         val avg = getDistanceAt(cx, cy) ?: return 0f
-        return MeasurementEngine.computeFlatArea(pts.map{it.x}.toFloatArray(), pts.map{it.y}.toFloatArray(), avg, vw, getHfovDegrees())
+        return MeasurementEngine.computeFlatArea(pts.map{it.x}.toFloatArray(), pts.map{it.y}.toFloatArray(), avg, vw, getHfovDegrees(), vh, getVfovDegrees())
     }
 
     private fun setupUI() {

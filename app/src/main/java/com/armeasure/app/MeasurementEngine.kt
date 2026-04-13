@@ -63,13 +63,20 @@ object MeasurementEngine {
         xs: FloatArray, ys: FloatArray,
         avgDistCm: Float,
         viewW: Float,
-        hfovDeg: Double
+        hfovDeg: Double,
+        viewH: Float = 0f,
+        vfovDeg: Double = 0.0
     ): Float {
         val n = xs.size
         if (n < 3 || n != ys.size || avgDistCm <= 0 || viewW <= 0) return 0f
         val hfov = Math.toRadians(hfovDeg)
-        val viewWidthM = (2 * (avgDistCm / 100f) * Math.tan(hfov / 2)).toFloat()
-        val scale = viewWidthM / viewW
+        val viewWidthCm = (2 * avgDistCm * Math.tan(hfov / 2)).toFloat()
+        val scaleX = viewWidthCm / viewW
+        // Use vfov if provided, otherwise fall back to aspect-ratio estimate
+        val scaleY = if (viewH > 0 && vfovDeg > 0) {
+            val vfov = Math.toRadians(vfovDeg)
+            (2 * avgDistCm * Math.tan(vfov / 2)).toFloat() / viewH
+        } else scaleX
 
         var areaPixels = 0.0
         for (i in 0 until n) {
@@ -77,6 +84,6 @@ object MeasurementEngine {
             areaPixels += xs[i] * ys[j]
             areaPixels -= xs[j] * ys[i]
         }
-        return (Math.abs(areaPixels / 2.0) * scale * scale * 10000.0).toFloat()
+        return (Math.abs(areaPixels / 2.0) * scaleX * scaleY).toFloat()
     }
 }
