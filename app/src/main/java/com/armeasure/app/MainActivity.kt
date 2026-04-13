@@ -56,6 +56,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var firstDistance: Float = 0f
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
+    private val sweepLock = Any()
     private val maxSweepHistory = 200
 
     companion object {
@@ -242,8 +243,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             runOnUiThread {
                 if (dist != null && dist > 0) {
                     binding.overlayView.sweepDistanceCm = dist
-                    sweepHistory.add(Pair(x, dist)); if (sweepHistory.size > maxSweepHistory) { sweepHistory.removeAt(0); sweepHistory.removeAt(0) }
-                    binding.overlayView.sweepHistory = sweepHistory.toList()
+                    synchronized(sweepLock) {
+                        sweepHistory.add(Pair(x, dist)); if (sweepHistory.size > maxSweepHistory) { sweepHistory.removeAt(0); sweepHistory.removeAt(0) }
+                        binding.overlayView.sweepHistory = sweepHistory.toList()
+                    }
                     binding.tvDistance.text = formatDistance(dist)
                 } else { binding.overlayView.sweepDistanceCm = -1f; binding.tvDistance.text = "扫描中..." }
                 binding.overlayView.invalidate()
