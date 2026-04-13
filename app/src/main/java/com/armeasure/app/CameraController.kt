@@ -202,6 +202,23 @@ class CameraController(
         openCamera(selection, onReady, onError)
     }
 
+    /**
+     * Toggle depth camera without disturbing RGB preview.
+     * Returns true if depth is now enabled.
+     */
+    fun toggleDepthCamera(onDone: (Boolean) -> Unit) {
+        if (depthCameraEnabled) {
+            // Turning OFF: just close depth, RGB stays
+            closeDepthOnly()
+            depthCameraEnabled = false
+            onDone(false)
+        } else {
+            // Turning ON: open depth only, RGB stays
+            depthCameraEnabled = true
+            openDepthOnly { onDone(true) }
+        }
+    }
+
     fun setupPreviewSession(camera: CameraDevice, sameCameraHasDepth: Boolean) {
         try {
             val holder = surfaceView.holder
@@ -317,7 +334,29 @@ class CameraController(
         }
     }
 
-    fun close() {
+ 
+    /** Close only the depth camera, keep RGB preview running */
+    fun closeDepthOnly() {
+        try {
+            depthReader?.close(); depthReader = null
+            depthCameraDevice?.close(); depthCameraDevice = null
+        } catch (_: Exception) {}
+        depthStreamActive = false
+    }
+
+    /** Open only the depth camera (RGB must already be open) */
+    fun openDepthOnly(onReady: () -> Unit) {
+        val sel = lastSelection ?: return
+        if (sel.depthId != null && sel.depthId != sel.rgbId) {
+            openDepthCamera(sel.depthId)
+            onReady()
+        } else if (sel.sameCameraHasDepth && cameraDevice != null) {
+            // Same-camera depth: need to reconfigure preview session
+            setupPreviewSession(cameraDevice!!, true)
+            onReady()
+        }
+    }
+   fun close() {
         try {
             cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)
             captureSession?.close(); captureSession = null
