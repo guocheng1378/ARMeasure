@@ -46,6 +46,9 @@ class CameraController(
         private set
     var focalLengthMm: Float = 0f
         private set
+    /** Camera intrinsic calibration: [fx, fy, cx, cy, skew] or null if unavailable */
+    var intrinsicCalibration: FloatArray? = null
+        private set
     var hasDepthMap: Boolean = false
         private set
     var depthStreamActive: Boolean = false
@@ -141,8 +144,11 @@ class CameraController(
 
         val rgbId = bestRgbId ?: ids.firstOrNull() ?: return null
 
-        rgbSensorActiveArray = cameraManager.getCameraCharacteristics(rgbId)
-            .get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val rgbChars = cameraManager.getCameraCharacteristics(rgbId)
+        rgbSensorActiveArray = rgbChars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+
+        // Read intrinsic calibration: [fx, fy, cx, cy, skew]
+        intrinsicCalibration = rgbChars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
 
         if (depthCamId != null) {
             depthSensorActiveArray = cameraManager.getCameraCharacteristics(depthCamId)

@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private val overlayAreaPoints = mutableListOf<PointF>()
     private var firstPoint: PointF? = null
     private var firstDistance: Float = 0f
+    private var firstUncertainty: Float = 0f
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
     private val sweepLock = Any()
@@ -181,10 +182,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         )
     }
 
-    private fun getDistanceAt(sx: Float, sy: Float): Float? {
+    private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null): Float? {
         var raw: Float? = null
-        if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy)
-        if (raw == null || raw <= 0) raw = tofHelper.getDistanceCm()
+        // Try depth map first, then ToF, then AF focus distance
+        if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy, depthFilterOverride ?: depthFilter)
+        val tofDist = tofHelper.getDistanceCm()
+
+        // Depth fusion: when both depth map and ToF are available, combine them
+        if (raw != null && raw > 0 && tofDist != null && tofDist > 0) {
+            // ToF is typically more precise at short range, depth map gives spatial info
+            // Use inverse-variance weighting: ToF variance ~25cm² (5cm σ), DEPTH16 ~100cm² (10cm σ)
+            val tofVar = 25f
+            val depthVar = if (raw < 100f) 64f else 144f  // closer = more precise
+            raw = MeasurementEngine.fuseDepth(raw, depthVar, tofDist, tofVar)
+        } else if (raw == null || raw <= 0) {
+            raw = tofDist
+        }
         if (raw == null || raw <= 0) { val d = currentFocusDistance; if (d > 0) raw = d * 100f }
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
         if (raw != null && raw > 0 && imuHelper.isAvailable()) {
@@ -192,6 +205,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh) else imuHelper.compensateDepth(raw)
         }
         return raw
+    }
+
+    data class DepthResult(val depthCm: Float, val uncertaintyCm: Float)
+
+    /**
+     * Collect multiple depth samples at a screen point across frames.
+     * Uses median + MAD outlier rejection for robustness.
+     * Returns both the robust depth and the sample standard deviation as uncertainty.
+     */
+    private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = 5, intervalMs: Long = 80): DepthResult? {
+        // Create a fresh filter per sampling session to avoid state contamination
+        // from previous measurement points (Kalman state belongs to this point only)
+        val localFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 2000f, maxRangeMm = 5000f, processNoise = 300f, initMeasureNoise = 300f)
+        val samples = mutableListOf<Float>()
+        for (i in 0 until sampleCount) {
+            val d = getDistanceAt(sx, sy, depthFilterOverride = localFilter)
+            if (d != null && d > 0) samples.add(d)
+            if (i < sampleCount - 1) Thread.sleep(intervalMs)
+        }
+        val robust = MeasurementEngine.robustDepth(samples) ?: return null
+        // Standard deviation of valid samples as uncertainty
+        val unc = if (samples.size >= 2) {
+            val mean = samples.average().toFloat()
+            val variance = samples.sumOf { ((it - mean) * (it - mean)).toDouble() } / (samples.size - 1)
+            sqrt(variance).toFloat()
+        } else 0f
+        return DepthResult(robust, unc)
     }
 
     private var cachedHfov: Double = Double.NaN
@@ -205,8 +245,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun formatDistance(cm: Float): String {
         val (v, u) = convertUnit(cm)
-        return if (u == "cm") String.format("%.0f %s", v, u)
-        else String.format("%.1f %s", v, u)
+        return String.format("%.1f %s", v, u)
     }
 
     private fun formatArea(cm2: Float): String {
@@ -215,8 +254,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Unit.INCH -> Pair(cm2 / (2.54f * 2.54f), "in²")
             Unit.M -> Pair(cm2 / 10000f, "m²")
         }
-        return if (u == "cm²") String.format("%.0f %s", v, u)
-        else String.format("%.2f %s", v, u)
+        return String.format("%.1f %s", v, u)
     }
 
     private fun getHfovDegrees(): Double {
@@ -232,11 +270,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun onScreenTapped(x: Float, y: Float) {
         triggerAutoFocus(x, y); haptic()
+        // AF needs more settling time than depth-based modes
+        val settleMs = if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) 600L else 800L
         if (calibrating) {
-            backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, 600)
+            backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, settleMs)
             return
         }
-        backgroundHandler?.postDelayed({ runOnUiThread { measureAtPoint(x, y) } }, 600)
+        backgroundHandler?.postDelayed({ runOnUiThread { measureAtPoint(x, y) } }, settleMs)
     }
 
     private fun onSweepMoved(x: Float, y: Float) {
@@ -308,27 +348,80 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handlePointTap(x: Float, y: Float) {
         overlayPoints.clear(); overlayPoints.add(PointF(x, y))
-        val dist = getDistanceAt(x, y)
-        if (dist != null && dist > 0) lastRawCm = dist
-        measuredResult = when { dist != null -> formatDistance(dist); tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"; else -> "对焦中..." }
-        binding.tvDistance.text = measuredResult; updateOverlay()
-        if (dist != null && dist > 0) saveToHistory(measuredResult, "单点")
+        binding.tvDistance.text = "采样中..."
+        updateOverlay()
+        backgroundHandler?.post {
+            val result = collectDepthSamples(x, y)
+            val dist = result?.depthCm
+            if (dist != null && dist > 0) lastRawCm = dist
+            val unc = result?.uncertaintyCm ?: 0f
+            val uncStr = if (unc > 0.5f) "  ±${String.format("%.1f", unc)}cm" else ""
+            runOnUiThread {
+                measuredResult = when {
+                    dist != null -> formatDistance(dist) + uncStr
+                    tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"
+                    else -> "对焦中..."
+                }
+                binding.tvDistance.text = measuredResult; updateOverlay()
+                if (dist != null && dist > 0) saveToHistory(formatDistance(dist), "单点")
+            }
+        }
     }
 
     private fun handleLineTap(x: Float, y: Float) {
         if (firstPoint == null) {
-            firstPoint = PointF(x, y); firstDistance = getDistanceAt(x, y) ?: 0f
+            firstPoint = PointF(x, y)
             overlayPoints.clear(); overlayPoints.add(PointF(x, y))
-            binding.tvDistance.text = "标记第二点..."; updateOverlay()
+            binding.tvDistance.text = "采样中(1/2)..."
+            updateOverlay()
+            // Mark IMU snapshot for motion detection
+            if (imuHelper.isAvailable()) imuHelper.markPoint()
+            // Multi-sample depth for first point on background thread
+            backgroundHandler?.post {
+                val result = collectDepthSamples(x, y)
+                firstDistance = result?.depthCm ?: 0f
+                firstUncertainty = result?.uncertaintyCm ?: 0f
+                runOnUiThread { binding.tvDistance.text = "标记第二点..." }
+            }
         } else {
             val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
-            val d1 = firstDistance; val d2 = getDistanceAt(x, y) ?: d1
-            val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
-            val dist = MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
-            measuredResult = formatDistance(dist); binding.tvDistance.text = measuredResult
-            binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
-            updateOverlay(); firstPoint = null
-            saveToHistory(measuredResult, "两点")
+            // Check IMU motion between two taps
+            val motion = if (imuHelper.isAvailable()) imuHelper.checkMotionSince() else null
+            val motionWarn = motion?.warning
+            binding.tvDistance.text = "采样中(2/2)..."
+            updateOverlay()
+            // Multi-sample depth for second point on background thread
+            backgroundHandler?.post {
+                val d1 = firstDistance
+                val u1 = firstUncertainty
+                // Apply motion correction: reduce depth sensor confidence when device moved
+                val motionFactor = if (imuHelper.isAvailable()) imuHelper.getMotionCorrectionFactor() else 1f
+                val result2 = collectDepthSamples(x, y)
+                val d2 = (result2?.depthCm ?: d1) * motionFactor
+                val u2 = result2?.uncertaintyCm ?: 0f
+                val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
+                // Use intrinsic calibration if available (more accurate than FOV)
+                val intrinsics = cameraCtrl.intrinsicCalibration
+                val dist = if (intrinsics != null && intrinsics.size >= 4) {
+                    val arr = cameraCtrl.rgbSensorActiveArray
+                    val imgW = arr?.width() ?: vw.toInt()
+                    val imgH = arr?.height() ?: vh.toInt()
+                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                } else {
+                    MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                }
+                // Combined uncertainty: sqrt(u1² + u2²)
+                val totalUnc = sqrt(u1 * u1 + u2 * u2)
+                runOnUiThread {
+                    measuredResult = formatDistance(dist)
+                    val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
+                    val displayText = listOfNotNull(measuredResult + uncStr, motionWarn).joinToString("  ")
+                    binding.tvDistance.text = displayText
+                    binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
+                    updateOverlay(); firstPoint = null
+                    saveToHistory(measuredResult, "两点")
+                }
+            }
         }
     }
 
@@ -351,11 +444,24 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
             val depths = pts.map { getDistanceAt(it.x, it.y) }
             if (depths.all { it != null && it > 0 }) {
+                val intrinsics = cameraCtrl.intrinsicCalibration
                 val pts3d = pts.zip(depths).map { (p, d) ->
-                    val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
-                    val px = d!! * Math.tan(nx * Math.toRadians(getHfovDegrees()) / 2).toFloat()
-                    val py = d * Math.tan(ny * Math.toRadians(getVfovDegrees()) / 2).toFloat()
-                    Triple(px, py, d)  // 3D point: horizontal offset, vertical offset, depth
+                    if (intrinsics != null && intrinsics.size >= 4) {
+                        // Intrinsic projection: more accurate
+                        val arr = cameraCtrl.rgbSensorActiveArray
+                        val imgW = arr?.width() ?: vw.toInt()
+                        val imgH = arr?.height() ?: vh.toInt()
+                        val ix = p.x / vw * imgW; val iy = p.y / vh * imgH
+                        val px = d!! * (ix - intrinsics[2]) / intrinsics[0]
+                        val py = d * (iy - intrinsics[3]) / intrinsics[1]
+                        Triple(px, py, d)
+                    } else {
+                        // FOV fallback
+                        val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
+                        val px = d!! * Math.tan(nx * Math.toRadians(getHfovDegrees()) / 2).toFloat()
+                        val py = d * Math.tan(ny * Math.toRadians(getVfovDegrees()) / 2).toFloat()
+                        Triple(px, py, d)
+                    }
                 }
                 return MeasurementEngine.computePolygonArea3D(pts3d)
             }
@@ -393,13 +499,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun resetMeasurement() {
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
-        calibrating = false; lastRawCm = -1f
+        calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList(); binding.overlayView.areaPoints = emptyList()
         binding.overlayView.showLineLabels = false; binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
         // Reset filter states so next measurement starts fresh (not from old Kalman/ToF momentum)
         depthFilter.reset()
         tofHelper.reset()
+        if (imuHelper.isAvailable()) imuHelper.reset()
         currentFocusDistance = -1f
         depthBuffer = null
         updateCalibrationUI()
@@ -436,7 +543,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.points = overlayAreaPoints.toList(); binding.overlayView.areaPoints = overlayAreaPoints.toList(); binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> { firstPoint = null; overlayPoints.clear(); binding.tvDistance.text = "--"; updateOverlay() }
+            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; updateOverlay() }
             else -> resetMeasurement()
         }
     }
@@ -621,7 +728,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         } catch (e: Exception) { Log.e(TAG, "depth err", e) } finally { image.close() }
     }
 
-    private fun getDepthAtScreenPoint(sx: Float, sy: Float): Float? {
+    private fun getDepthAtScreenPoint(sx: Float, sy: Float, filter: DistanceFilter = depthFilter): Float? {
         synchronized(depthLock) {
             val buf = depthBuffer ?: return null
             if (buf.isEmpty() || depthWidth <= 0 || depthHeight <= 0) return null
@@ -635,14 +742,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 dy = (sy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
             } else { dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1); dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1) }
 
+            // Adaptive window: smaller for low-res depth maps to avoid neighboring object contamination
+            // DEPTH16 is typically 240x180 or smaller → use radius 1 (3x3)
+            // Higher resolution depth → radius 2 (5x5) for better noise averaging
+            val radius = if (depthWidth <= 240 || depthHeight <= 180) 1 else 2
+
             var wSum = 0.0; var wtSum = 0.0; var cnt = 0
-            for (ddy in -3..3) for (ddx in -3..3) {
+            for (ddy in -radius..radius) for (ddx in -radius..radius) {
                 val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
                 val raw = buf[py*depthWidth+px].toInt() and 0xFFFF
                 if (raw in 1..65533) { val d2 = (ddx*ddx+ddy*ddy).toFloat(); val w = 1f/(1f+d2); wSum += raw*w; wtSum += w; cnt++ }
             }
-            if (cnt < 5) return null
-            val filtered = depthFilter.filter((wSum / wtSum).toFloat())
+            if (cnt < 3) return null
+            val filtered = filter.filter((wSum / wtSum).toFloat())
             return if (filtered > 0) filtered / 10f else null
         }
     }
