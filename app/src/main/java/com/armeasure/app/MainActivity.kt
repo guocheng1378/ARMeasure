@@ -34,6 +34,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     @Volatile private var currentFocusDistance: Float = -1f
 
     private enum class Mode { POINT, LINE, AREA, SWEEP }
+    private enum class Unit { CM, INCH, M }
+    private var currentUnit = Unit.CM
     private var currentMode = Mode.POINT
     @Volatile private var cameraOpening = false
 
@@ -175,6 +177,28 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var cachedHfov: Double = Double.NaN
     private var cachedVfov: Double = Double.NaN
 
+    private fun convertUnit(cm: Float): Pair<Float, String> = when (currentUnit) {
+        Unit.CM -> Pair(cm, "cm")
+        Unit.INCH -> Pair(cm / 2.54f, "in")
+        Unit.M -> Pair(cm / 100f, "m")
+    }
+
+    private fun formatDistance(cm: Float): String {
+        val (v, u) = convertUnit(cm)
+        return if (u == "cm") String.format("%.0f %s", v, u)
+        else String.format("%.1f %s", v, u)
+    }
+
+    private fun formatArea(cm2: Float): String {
+        val (v, u) = when (currentUnit) {
+            Unit.CM -> Pair(cm2, "cm²")
+            Unit.INCH -> Pair(cm2 / (2.54f * 2.54f), "in²")
+            Unit.M -> Pair(cm2 / 10000f, "m²")
+        }
+        return if (u == "cm²") String.format("%.0f %s", v, u)
+        else String.format("%.2f %s", v, u)
+    }
+
     private fun getHfovDegrees(): Double {
         if (!cachedHfov.isNaN()) return cachedHfov
         val s = cameraCtrl.sensorSize ?: return 65.0; val f = cameraCtrl.focalLengthMm.takeIf { it > 0 } ?: return 65.0
@@ -199,7 +223,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.sweepDistanceCm = dist
                     sweepHistory.add(Pair(x, dist)); if (sweepHistory.size > maxSweepHistory) { sweepHistory.removeAt(0); sweepHistory.removeAt(0) }
                     binding.overlayView.sweepHistory = sweepHistory.toList()
-                    binding.tvDistance.text = String.format("%.1f cm", dist)
+                    binding.tvDistance.text = formatDistance(dist)
                 } else { binding.overlayView.sweepDistanceCm = -1f; binding.tvDistance.text = "扫描中..." }
                 binding.overlayView.invalidate()
             }
@@ -250,7 +274,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun handlePointTap(x: Float, y: Float) {
         overlayPoints.clear(); overlayPoints.add(PointF(x, y))
         val dist = getDistanceAt(x, y)
-        measuredResult = when { dist != null -> String.format("%.0f cm", dist); tofHelper.tofDistanceMm > 0 -> String.format("~%.0f cm (近)", tofHelper.tofDistanceMm / 10f); else -> "对焦中..." }
+        measuredResult = when { dist != null -> formatDistance(dist); tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"; else -> "对焦中..." }
         binding.tvDistance.text = measuredResult; updateOverlay()
     }
 
@@ -264,7 +288,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val d1 = firstDistance; val d2 = getDistanceAt(x, y) ?: d1
             val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
             val dist = MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
-            measuredResult = String.format("%.0f cm", dist); binding.tvDistance.text = measuredResult
+            measuredResult = formatDistance(dist); binding.tvDistance.text = measuredResult
             binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
             updateOverlay(); firstPoint = null
         }
@@ -272,7 +296,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handleAreaTap(x: Float, y: Float) {
         overlayAreaPoints.add(PointF(x, y))
-        if (overlayAreaPoints.size >= 3) { val area = computeArea(overlayAreaPoints); measuredResult = if (area > 0) String.format("%.0f cm²", area) else "无法计算"; binding.tvDistance.text = measuredResult }
+        if (overlayAreaPoints.size >= 3) { val area = computeArea(overlayAreaPoints); measuredResult = if (area > 0) formatArea(area) else "无法计算"; binding.tvDistance.text = measuredResult }
         else binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
         val lines = mutableListOf<Pair<PointF, PointF>>()
         for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i+1]))
@@ -309,18 +333,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.btnAreaMode.setOnClickListener { setMode(Mode.AREA) }
         binding.btnSweepMode.setOnClickListener { setMode(Mode.SWEEP) }
         binding.btnDepthToggle.setOnClickListener { toggleDepthCamera() }
-        binding.btnReset.setOnClickListener {
-            if (currentMode == Mode.AREA && overlayAreaPoints.isNotEmpty()) {
-                overlayAreaPoints.removeAt(overlayAreaPoints.size - 1)
-                if (overlayAreaPoints.size >= 3) { val a = computeArea(overlayAreaPoints); measuredResult = if (a>0) String.format("%.0f cm²", a) else "无法计算"; binding.tvDistance.text = measuredResult }
-                else { measuredResult = if (overlayAreaPoints.isEmpty()) "--" else "继续点击 (${overlayAreaPoints.size}/3+)"; binding.tvDistance.text = measuredResult }
-                val lines = mutableListOf<Pair<PointF, PointF>>()
-                for (i in 0 until overlayAreaPoints.size-1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i+1]))
-                if (overlayAreaPoints.size >= 3) lines.add(Pair(overlayAreaPoints.last(), overlayAreaPoints.first()))
-                binding.overlayView.lines = lines; binding.overlayView.showLineLabels = false
-                binding.overlayView.points = overlayAreaPoints.toList(); binding.overlayView.areaPoints = overlayAreaPoints.toList(); binding.overlayView.invalidate()
-            } else resetMeasurement()
-        }
+        binding.btnTorch.setOnClickListener { toggleTorch() }
+        binding.btnUndo.setOnClickListener { undoLastPoint() }
+        binding.tvDistance.setOnLongClickListener { cycleUnit(); true }
+        binding.btnReset.setOnClickListener { resetMeasurement() }
         binding.btnSave.setOnClickListener { saveMeasurement() }
         setMode(Mode.POINT)
         updateDepthToggleButton()
@@ -355,6 +371,42 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun toggleTorch() {
+        cameraCtrl.toggleTorch()
+        binding.btnTorch.setBackgroundColor(if (cameraCtrl.torchOn) 0x33FFCC00.toInt() else 0x00000000)
+        binding.btnTorch.text = if (cameraCtrl.torchOn) "灯光:开" else "灯光"
+    }
+
+    private fun undoLastPoint() {
+        when (currentMode) {
+            Mode.AREA -> {
+                if (overlayAreaPoints.isNotEmpty()) {
+                    overlayAreaPoints.removeAt(overlayAreaPoints.size - 1)
+                    if (overlayAreaPoints.size >= 3) { val a = computeArea(overlayAreaPoints); measuredResult = if (a > 0) formatArea(a) else "无法计算"; binding.tvDistance.text = measuredResult }
+                    else { measuredResult = if (overlayAreaPoints.isEmpty()) "--" else "继续点击 (${overlayAreaPoints.size}/3+)"; binding.tvDistance.text = measuredResult }
+                    val lines = mutableListOf<Pair<PointF, PointF>>()
+                    for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i + 1]))
+                    if (overlayAreaPoints.size >= 3) lines.add(Pair(overlayAreaPoints.last(), overlayAreaPoints.first()))
+                    binding.overlayView.lines = lines; binding.overlayView.showLineLabels = false
+                    binding.overlayView.points = overlayAreaPoints.toList(); binding.overlayView.areaPoints = overlayAreaPoints.toList(); binding.overlayView.invalidate()
+                }
+            }
+            Mode.LINE -> { firstPoint = null; overlayPoints.clear(); binding.tvDistance.text = "--"; updateOverlay() }
+            else -> resetMeasurement()
+        }
+    }
+
+    private fun cycleUnit() {
+        currentUnit = when (currentUnit) { Unit.CM -> Unit.INCH; Unit.INCH -> Unit.M; Unit.M -> Unit.CM }
+        val label = when (currentUnit) { Unit.CM -> "厘米"; Unit.INCH -> "英寸"; Unit.M -> "米" }
+        Toast.makeText(this, "单位: $label", Toast.LENGTH_SHORT).show()
+        // Re-format current display
+        if (measuredResult != "--") {
+            // Trigger a re-measurement display update won't work since we don't have the raw value
+            // Just inform the user the unit changed for next measurement
+        }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
