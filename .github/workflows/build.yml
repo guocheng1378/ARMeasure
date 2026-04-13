@@ -52,9 +52,14 @@ jobs:
         if: github.event_name == 'push'
         id: version
         run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          IFS='.' read -r major minor patch <<< "${LAST_TAG#v}"
-          NEW_TAG="v${major}.$((minor + 1)).${patch}"
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0")
+          LAST_NUM=${LAST_TAG#v}
+          if [[ "$LAST_NUM" =~ ^[0-9]+$ ]]; then
+            NEW_NUM=$((LAST_NUM + 1))
+          else
+            NEW_NUM=1
+          fi
+          NEW_TAG="v${NEW_NUM}"
           echo "tag=${NEW_TAG}" >> $GITHUB_OUTPUT
           echo "prev=${LAST_TAG}" >> $GITHUB_OUTPUT
 
@@ -63,12 +68,11 @@ jobs:
         id: changelog
         run: |
           PREV=${{ steps.version.outputs.prev }}
-          if [ "$PREV" = "v0.0.0" ]; then
+          if [ "$PREV" = "v0" ]; then
             LOG=$(git log --oneline -10 --no-merges)
           else
             LOG=$(git log --oneline ${PREV}..HEAD --no-merges)
           fi
-          # Write multiline output
           {
             echo 'log<<EOF'
             echo "$LOG"
