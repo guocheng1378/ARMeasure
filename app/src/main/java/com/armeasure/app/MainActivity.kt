@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     @Volatile private var depthBuffer: ShortArray? = null
     @Volatile private var depthWidth: Int = 0
     @Volatile private var depthHeight: Int = 0
+    private val depthLock = Any() // Fix #6: synchronize depth buffer access between BG and UI threads
     private val depthFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 800f, maxRangeMm = 5000f)
 
     private var backgroundHandler: Handler? = null
@@ -116,6 +117,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun startCamera() {
         if (cameraOpening || cameraCtrl.cameraDevice != null) return
         cameraOpening = true
+        // Fix #8: invalidate FOV cache on new camera session
+        cachedHfov = Double.NaN; cachedVfov = Double.NaN
         val selection = cameraCtrl.selectCameras() ?: run { binding.tvSensor.text = "无可用摄像头"; cameraOpening = false; return }
         cameraCtrl.onDepthImageAvailable = { reader -> processDepthImage(reader) }
         cameraCtrl.captureCallback = object : CameraCaptureSession.CaptureCallback() {
@@ -257,13 +260,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val region = MeteringRectangle((fx-rs/2).coerceIn(0,sr.width()-rs), (fy-rs/2).coerceIn(0,sr.height()-rs), rs, rs, MeteringRectangle.METERING_WEIGHT_MAX)
         try {
             val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            req.addTarget(sv.holder.surface); req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            req.addTarget(sv.holder.surface)
+            // Fix #3: also include depth surface in AF request when depth is active on same camera
+            if (cameraCtrl.depthStreamActive && cameraCtrl.depthReader != null) {
+                req.addTarget(cameraCtrl.depthReader!!.surface)
+            }
+            req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             req.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region)); req.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
             session.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
                     val fd = result.get(CaptureResult.LENS_FOCUS_DISTANCE); if (fd != null && fd > 0) currentFocusDistance = 1f / fd
-                    if (!cameraCtrl.depthStreamActive) try {
+                    try {
                         val res = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW); res.addTarget(sv.holder.surface)
+                        // Fix #3: restore depth surface in repeating request
+                        if (cameraCtrl.depthStreamActive && cameraCtrl.depthReader != null) {
+                            res.addTarget(cameraCtrl.depthReader!!.surface)
+                        }
                         res.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         session.setRepeatingRequest(res.build(), cameraCtrl.captureCallback, backgroundHandler)
                     } catch (_: Exception) {}
@@ -585,34 +597,38 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         try {
             val plane = image.planes[0]; val buffer = plane.buffer
             val rs = plane.rowStride; val ps = plane.pixelStride; val w = image.width; val h = image.height
-            val buf = depthBufReusable?.let { if (it.size == w * h) it else null } ?: ShortArray(w * h).also { depthBufReusable = it }
-            for (row in 0 until h) { val rowStart = row * rs; for (col in 0 until w) { val bi = rowStart + col * ps; if (bi + 1 < buffer.capacity()) buf[row * w + col] = buffer.getShort(bi) } }
-            depthBuffer = buf; depthWidth = w; depthHeight = h
+            synchronized(depthLock) {
+                val buf = depthBufReusable?.let { if (it.size == w * h) it else null } ?: ShortArray(w * h).also { depthBufReusable = it }
+                for (row in 0 until h) { val rowStart = row * rs; for (col in 0 until w) { val bi = rowStart + col * ps; if (bi + 1 < buffer.capacity()) buf[row * w + col] = buffer.getShort(bi) } }
+                depthBuffer = buf; depthWidth = w; depthHeight = h
+            }
         } catch (e: Exception) { Log.e(TAG, "depth err", e) } finally { image.close() }
     }
 
     private fun getDepthAtScreenPoint(sx: Float, sy: Float): Float? {
-        val buf = depthBuffer ?: return null
-        if (buf.isEmpty() || depthWidth <= 0 || depthHeight <= 0) return null
-        val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
-        if (vw <= 0 || vh <= 0) return null
-        val dx: Int; val dy: Int
-        val sep = cameraCtrl.depthCameraDevice?.id != cameraCtrl.cameraDevice?.id
-        if (sep && cameraCtrl.depthSensorActiveArray != null && cameraCtrl.rgbSensorActiveArray != null) {
-            val rgb = cameraCtrl.rgbSensorActiveArray!!; val dep = cameraCtrl.depthSensorActiveArray!!
-            dx = (sx / vw * dep.width()).toInt().coerceIn(0, depthWidth - 1)
-            dy = (sy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
-        } else { dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1); dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1) }
+        synchronized(depthLock) {
+            val buf = depthBuffer ?: return null
+            if (buf.isEmpty() || depthWidth <= 0 || depthHeight <= 0) return null
+            val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
+            if (vw <= 0 || vh <= 0) return null
+            val dx: Int; val dy: Int
+            val sep = cameraCtrl.depthCameraDevice?.id != cameraCtrl.cameraDevice?.id
+            if (sep && cameraCtrl.depthSensorActiveArray != null && cameraCtrl.rgbSensorActiveArray != null) {
+                val rgb = cameraCtrl.rgbSensorActiveArray!!; val dep = cameraCtrl.depthSensorActiveArray!!
+                dx = (sx / vw * dep.width()).toInt().coerceIn(0, depthWidth - 1)
+                dy = (sy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
+            } else { dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1); dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1) }
 
-        var wSum = 0.0; var wtSum = 0.0; var cnt = 0
-        for (ddy in -3..3) for (ddx in -3..3) {
-            val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
-            val raw = buf[py*depthWidth+px].toInt() and 0xFFFF
-            if (raw in 1..65533) { val d2 = (ddx*ddx+ddy*ddy).toFloat(); val w = 1f/(1f+d2); wSum += raw*w; wtSum += w; cnt++ }
+            var wSum = 0.0; var wtSum = 0.0; var cnt = 0
+            for (ddy in -3..3) for (ddx in -3..3) {
+                val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
+                val raw = buf[py*depthWidth+px].toInt() and 0xFFFF
+                if (raw in 1..65533) { val d2 = (ddx*ddx+ddy*ddy).toFloat(); val w = 1f/(1f+d2); wSum += raw*w; wtSum += w; cnt++ }
+            }
+            if (cnt < 5) return null
+            val filtered = depthFilter.filter((wSum / wtSum).toFloat())
+            return if (filtered > 0) filtered / 10f else null
         }
-        if (cnt < 5) return null
-        val filtered = depthFilter.filter((wSum / wtSum).toFloat())
-        return if (filtered > 0) filtered / 10f else null
     }
 
     private fun startBackgroundThread() {

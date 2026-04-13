@@ -160,38 +160,49 @@ class CameraController(
             != PackageManager.PERMISSION_GRANTED
         ) return
 
-        cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)
+        if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
+            Log.e(TAG, "Camera open timeout — lock not acquired")
+            onError?.invoke()
+            return
+        }
 
-        cameraManager.openCamera(selection.rgbId, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) {
-                cameraOpenCloseLock.release()
-                cameraDevice = camera
+        try {
+            cameraManager.openCamera(selection.rgbId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraOpenCloseLock.release()
+                    cameraDevice = camera
 
-                if (depthCameraEnabled && selection.depthId != null && selection.depthId != selection.rgbId) {
-                    openDepthCamera(selection.depthId)
+                    if (depthCameraEnabled && selection.depthId != null && selection.depthId != selection.rgbId) {
+                        openDepthCamera(selection.depthId)
+                    }
+
+                    if (surfaceView.width > 0 && surfaceView.holder.surface.isValid) {
+                        val useSameCameraDepth = selection.sameCameraHasDepth && depthCameraEnabled
+                        setupPreviewSession(camera, useSameCameraDepth)
+                    }
+                    onReady(selection.sameCameraHasDepth && depthCameraEnabled)
                 }
 
-                if (surfaceView.width > 0 && surfaceView.holder.surface.isValid) {
-                    val useSameCameraDepth = selection.sameCameraHasDepth && depthCameraEnabled
-                    setupPreviewSession(camera, useSameCameraDepth)
+                override fun onDisconnected(camera: CameraDevice) {
+                    cameraOpenCloseLock.release()
+                    camera.close()
+                    cameraDevice = null
+                    onError?.invoke()
                 }
-                onReady(selection.sameCameraHasDepth && depthCameraEnabled)
-            }
 
-            override fun onDisconnected(camera: CameraDevice) {
-                cameraOpenCloseLock.release()
-                camera.close()
-                cameraDevice = null
-                onError?.invoke()
-            }
-
-            override fun onError(camera: CameraDevice, error: Int) {
-                cameraOpenCloseLock.release()
-                camera.close()
-                cameraDevice = null
-                onError?.invoke()
-            }
-        }, backgroundHandler)
+                override fun onError(camera: CameraDevice, error: Int) {
+                    cameraOpenCloseLock.release()
+                    camera.close()
+                    cameraDevice = null
+                    onError?.invoke()
+                }
+            }, backgroundHandler)
+        } catch (e: Exception) {
+            // Fix #5: release lock if openCamera itself throws (e.g. CameraAccessException)
+            cameraOpenCloseLock.release()
+            Log.e(TAG, "openCamera threw", e)
+            onError?.invoke()
+        }
     }
 
     private fun openDepthCamera(depthId: String) {
@@ -376,7 +387,7 @@ class CameraController(
     fun openDepthOnly(onReady: () -> Unit) {
         val sel = lastSelection ?: return
         if (sel.depthId != null && sel.depthId != sel.rgbId) {
-            // Wrap openDepthCamera callback to notify when actually ready
+            // Separate depth camera — open it independently, no RGB session change
             val origDepthId = sel.depthId
             if (ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) return
@@ -398,6 +409,9 @@ class CameraController(
                 Log.e(TAG, "Failed to open depth camera", e)
             }
         } else if (sel.sameCameraHasDepth && cameraDevice != null) {
+            // Fix #4 & #7: same-camera depth — close old depthReader before rebuilding session
+            depthReader?.close(); depthReader = null
+            // Rebuild preview session with depth surface added
             setupPreviewSession(cameraDevice!!, true)
             onReady()
         }
