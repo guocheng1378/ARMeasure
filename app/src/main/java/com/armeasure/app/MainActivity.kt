@@ -917,17 +917,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 if (temporalFrames.size >= 2) {
                     val vals = temporalFrames.mapNotNull { f ->
                         if (f.size == depthWidth * depthHeight) {
-                            val v = f[dy * depthWidth + dx].toInt() and 0xFFFF
-                            if (v in 1..65533) v.toFloat() else null
+                            val v = f[dy * depthWidth + dx].toInt() and 0x1FFF
+                            if (v in 1..8191) v.toFloat() else null
                         } else null
                     }
                     if (vals.size >= 2) { val sorted = vals.sorted(); sorted[sorted.size / 2] }
-                    else (buf[dy * depthWidth + dx].toInt() and 0xFFFF).toFloat()
-                } else (buf[dy * depthWidth + dx].toInt() and 0xFFFF).toFloat()
+                    else (buf[dy * depthWidth + dx].toInt() and 0x1FFF).toFloat()
+                } else (buf[dy * depthWidth + dx].toInt() and 0x1FFF).toFloat()
             }
 
             // Adaptive kernel size
-            val centerCm = if (centerRaw > 0 && centerRaw <= 65533) centerRaw / 10f else 0f
+            val centerCm = if (centerRaw > 0 && centerRaw <= 8191) centerRaw / 10f else 0f
             val radius = when {
                 depthWidth <= 240 || depthHeight <= 180 -> AppConstants.NEIGHBORHOOD_RADIUS_NEAR
                 centerCm > 0 && centerCm < AppConstants.NEIGHBORHOOD_NEAR_CM -> AppConstants.NEIGHBORHOOD_RADIUS_NEAR
@@ -942,8 +942,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val depthSigma2 = 2f * depthSigma * depthSigma
             for (ddy in -radius..radius) for (ddx in -radius..radius) {
                 val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
-                val raw = buf[py*depthWidth+px].toInt() and 0xFFFF
-                if (raw in 1..65533) {
+                val raw = buf[py*depthWidth+px].toInt() and 0x1FFF
+                if (raw in 1..8191) {
                     val spatialD2 = (ddx * ddx + ddy * ddy).toFloat()
                     val wSpatial = 1f / (1f + spatialD2)
                     // Depth similarity weight: reject neighbors with very different depth (different surface)

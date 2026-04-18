@@ -148,7 +148,23 @@ class CameraController(
         rgbSensorActiveArray = rgbChars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
 
         // Read intrinsic calibration: [fx, fy, cx, cy, skew]
-        intrinsicCalibration = rgbChars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
+        // Validate: fx/fy should be positive and within active array dimension range
+        intrinsicCalibration = rgbChars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)?.let { cal ->
+            if (cal.size >= 4 && cal[0] > 0 && cal[1] > 0) {
+                val arr = rgbSensorActiveArray
+                if (arr != null) {
+                    // Sanity: fx should be roughly in [arr.width*0.5, arr.width*3] range
+                    if (cal[0] in (arr.width() * 0.3f)..(arr.width() * 5f) &&
+                        cal[2] in 0f..arr.width().toFloat() &&
+                        cal[3] in 0f..arr.height().toFloat()) {
+                        cal
+                    } else {
+                        Log.w(TAG, "Intrinsics out of expected range fx=${cal[0]} arrW=${arr.width()}, falling back to FOV")
+                        null
+                    }
+                } else cal
+            } else null
+        }
 
         if (depthCamId != null) {
             depthSensorActiveArray = cameraManager.getCameraCharacteristics(depthCamId)

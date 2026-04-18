@@ -18,7 +18,7 @@ object AppConstants {
     const val TEMPORAL_FRAME_COUNT = 5    // keep last N depth frames for median
     const val DEPTH_EDGE_VARIANCE_THRESHOLD = 800f  // mm² — neighbor variance at depth edges
     const val DEPTH_EDGE_CONFIDENCE_MIN = 0.3f      // min confidence at object boundaries
-    const val DEPTH_BILATERAL_SIGMA_MM = 200f       // depth similarity sigma for bilateral filter (mm)
+    const val DEPTH_BILATERAL_SIGMA_MM = 80f        // depth similarity sigma for bilateral filter (mm) — small = sharp edges
 
     // ── Depth fusion variances (cm²) ──
     const val TOF_VARIANCE = 25f           // 5cm σ
