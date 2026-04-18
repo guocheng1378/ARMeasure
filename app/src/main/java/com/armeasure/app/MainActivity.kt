@@ -63,6 +63,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var firstPoint: PointF? = null
     private var firstDistance: Float = 0f
     private var firstUncertainty: Float = 0f
+    /** Apple-like: stored 3D world coordinates of first point (camera frame at tap time) */
+    private var firstWorld3D: Triple<Float, Float, Float>? = null
+    /** Apple-like: stored 3D world coordinates of second point */
+    private var secondWorld3D: Triple<Float, Float, Float>? = null
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
     private val sweepLock = Any()
@@ -100,33 +104,38 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.onMove = { x, y ->
             if (binding.overlayView.placingSecondPoint) {
                 binding.overlayView.liveCrosshair = PointF(x, y)
-                // Live depth tracking for second point (Apple-like real-time preview)
-                if (firstPoint != null && firstDistance > 0) {
+                // ★ Apple-like: compute distance from stored 3D world point to current cursor
+                val w1 = firstWorld3D
+                if (w1 != null && firstDistance > 0) {
                     backgroundHandler?.post {
                         val d2 = getDistanceAt(x, y, skipImu = true)
                         if (d2 != null && d2 > 0) {
-                            val vw = cachedViewWidth; val vh = cachedViewHeight
-                            val dist = if (vw > 0 && vh > 0) {
-                                val intrinsics = cameraCtrl.intrinsicCalibration
-                                val arr = cameraCtrl.rgbSensorActiveArray
-                                if (intrinsics != null && intrinsics.size >= 4 && arr != null) {
-                                    MeasurementEngine.compute3DDistanceIntrinsic(
-                                        firstPoint!!.x, firstPoint!!.y, x, y,
-                                        firstDistance, d2, vw, vh, intrinsics, arr.width(), arr.height()
-                                    )
-                                } else {
-                                    MeasurementEngine.compute3DDistance(
-                                        firstPoint!!.x, firstPoint!!.y, x, y,
-                                        firstDistance, d2, vw, vh, getHfovDegrees(), getVfovDegrees()
-                                    )
-                                }
-                            } else -1f
-                            // Level detection: tiltAngle < 3° ≈ level
+                            // Current cursor's 3D position
+                            val w2 = screenToWorld3D(x, y, d2)
+                            // IMU rotation compensation
+                            val (dp, dr) = if (imuHelper.isAvailable()) imuHelper.getRotationDeltaRad() else Pair(0f, 0f)
+                            val dist = if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
+                                val (rw1x, rw1y, rw1z) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
+                                MeasurementEngine.distance3D(Triple(rw1x, rw1y, rw1z), w2)
+                            } else {
+                                MeasurementEngine.distance3D(w1, w2)
+                            }
+                            // Project first 3D point to current screen position
+                            val projP1 = if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
+                                val (rw1x, rw1y, rw1z) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
+                                world3DToScreen(rw1x, rw1y, rw1z)
+                            } else {
+                                world3DToScreen(w1.first, w1.second, w1.third)
+                            }
                             val isLevel = imuHelper.isAvailable() && Math.abs(Math.toDegrees(imuHelper.tiltAngle.toDouble())) < 3.0
                             runOnUiThread {
                                 binding.overlayView.liveDistanceCm = dist
                                 binding.overlayView.secondPointDepthCm = d2
                                 binding.overlayView.deviceIsLevel = isLevel
+                                // Update first point screen position (surface-anchored visual)
+                                overlayPoints.clear()
+                                overlayPoints.add(PointF(projP1.first, projP1.second))
+                                binding.overlayView.points = overlayPoints.toList()
                                 binding.overlayView.invalidate()
                             }
                         }
@@ -316,6 +325,28 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     data class DepthResult(val depthCm: Float, val uncertaintyCm: Float)
 
+    /** Compute 3D world coordinates from screen position + depth (cm). */
+    private fun screenToWorld3D(sx: Float, sy: Float, depthCm: Float): Triple<Float, Float, Float> {
+        val vw = cachedViewWidth; val vh = cachedViewHeight
+        val intrinsics = cameraCtrl.intrinsicCalibration
+        val arr = cameraCtrl.rgbSensorActiveArray
+        if (intrinsics != null && intrinsics.size >= 4 && arr != null && vw > 0 && vh > 0) {
+            return MeasurementEngine.screenTo3DIntrinsic(sx, sy, depthCm, vw, vh, intrinsics, arr.width(), arr.height())
+        }
+        return MeasurementEngine.screenTo3DFOV(sx, sy, depthCm, vw, vh, getHfovDegrees(), getVfovDegrees())
+    }
+
+    /** Project 3D world coordinates back to screen position. */
+    private fun world3DToScreen(wx: Float, wy: Float, wz: Float): Pair<Float, Float> {
+        val vw = cachedViewWidth; val vh = cachedViewHeight
+        val intrinsics = cameraCtrl.intrinsicCalibration
+        val arr = cameraCtrl.rgbSensorActiveArray
+        if (intrinsics != null && intrinsics.size >= 4 && arr != null && vw > 0 && vh > 0) {
+            return MeasurementEngine.worldToScreenIntrinsic(wx, wy, wz, vw, vh, intrinsics, arr.width(), arr.height())
+        }
+        return MeasurementEngine.worldToScreenFOV(wx, wy, wz, vw, vh, getHfovDegrees(), getVfovDegrees())
+    }
+
     private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = AppConstants.DEPTH_SAMPLE_COUNT, intervalMs: Long = AppConstants.DEPTH_SAMPLE_INTERVAL_MS, skipImu: Boolean = false, onProgress: ((Int, Int) -> Unit)? = null, onComplete: (DepthResult?) -> Unit) {
         val localFilter = DistanceFilter(
             windowSize = AppConstants.DEPTH_WINDOW_SIZE, alpha = 0.4f,
@@ -467,6 +498,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handleLineTap(x: Float, y: Float) {
         if (firstPoint == null) {
+            // ── First point: sample depth, store 3D world coordinates ──
             firstPoint = PointF(x, y)
             overlayPoints.clear(); overlayPoints.add(PointF(x, y))
             binding.overlayView.placingSecondPoint = true
@@ -479,13 +511,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }) { result ->
                 firstDistance = result?.depthCm ?: 0f
                 firstUncertainty = result?.uncertaintyCm ?: 0f
+                // ★ Apple-like: store 3D world coordinates (not just screen coords)
+                firstWorld3D = if (firstDistance > 0) screenToWorld3D(x, y, firstDistance) else null
                 runOnUiThread {
                     binding.overlayView.firstPointDepthCm = firstDistance
                     binding.tvDistance.text = "标记第二点..."
                 }
             }
         } else {
-            val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
+            // ── Second point: sample depth, compute FIXED 3D distance from stored world coords ──
             binding.overlayView.placingSecondPoint = false
             binding.overlayView.liveCrosshair = null
             binding.overlayView.liveDistanceCm = -1f
@@ -494,7 +528,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.overlayView.deviceIsLevel = false
             binding.overlayView.triggerPulse(x, y)
             val imuAvail = imuHelper.isAvailable()
-            // Fix #1: get rotation delta BEFORE markPoint (markPoint resets accumulators)
             val (deltaPitch, deltaRoll) = if (imuAvail) imuHelper.getRotationDeltaRad() else Pair(0f, 0f)
             val motion = if (imuAvail) imuHelper.checkMotionSince() else null
             if (imuAvail) imuHelper.markPoint()
@@ -507,33 +540,63 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 runOnUiThread { binding.tvDistance.text = "采样中(2/2) $cur/$total..." }
             }) { result2 ->
                 val d2 = result2?.depthCm ?: d1; val u2 = result2?.uncertaintyCm ?: 0f
+
+                // ★ Apple-like: compute distance from FIXED 3D world coordinates
+                val w1 = firstWorld3D
+                val w2 = if (d2 > 0) screenToWorld3D(x, y, d2) else null
+                secondWorld3D = w2
+
+                val dist = if (w1 != null && w2 != null) {
+                    // Use stored 3D coordinates — distance is FIXED regardless of camera movement
+                    if (Math.abs(deltaPitch) > 0.005f || Math.abs(deltaRoll) > 0.005f) {
+                        // Rotate w1 to current camera frame before computing distance
+                        val (rw1x, rw1y, rw1z) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, deltaPitch, deltaRoll)
+                        MeasurementEngine.distance3D(Triple(rw1x, rw1y, rw1z), w2)
+                    } else {
+                        MeasurementEngine.distance3D(w1, w2)
+                    }
+                } else {
+                    // Fallback: old screen-coordinate method
+                    val p1 = firstPoint!!; val vw = cachedViewWidth; val vh = cachedViewHeight
+                    val intrinsics = cameraCtrl.intrinsicCalibration
+                    val arr = cameraCtrl.rgbSensorActiveArray
+                    val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+                    if (intrinsics != null && intrinsics.size >= 4) {
+                        MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, x, y, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                    } else {
+                        MeasurementEngine.compute3DDistance(p1.x, p1.y, x, y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    }
+                }
+
+                // Project first 3D point to current screen position for line display
+                val lineP1 = if (w1 != null) {
+                    if (Math.abs(deltaPitch) > 0.005f || Math.abs(deltaRoll) > 0.005f) {
+                        val (rw1x, rw1y, rw1z) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, deltaPitch, deltaRoll)
+                        world3DToScreen(rw1x, rw1y, rw1z)
+                    } else {
+                        world3DToScreen(w1.first, w1.second, w1.third)
+                    }
+                } else Pair(firstPoint!!.x, firstPoint!!.y)
+
+                val p1Screen = PointF(lineP1.first, lineP1.second)
+                val p2Screen = PointF(x, y)
+                overlayPoints.clear(); overlayPoints.add(p1Screen); overlayPoints.add(p2Screen)
+
+                // Uncertainty
                 val depthRatio = if (d1 > 0 && d2 > 0) maxOf(d1, d2) / minOf(d1, d2) else 1f
                 val consistencyWarn = if (depthRatio > AppConstants.DEPTH_CONSISTENCY_MAX_RATIO)
                     "⚠️ 两点平面差距大(${String.format("%.1f", depthRatio)}x)" else null
                 val vw = cachedViewWidth; val vh = cachedViewHeight
                 val intrinsics = cameraCtrl.intrinsicCalibration
-                val hasRotation = Math.abs(deltaPitch) > 0.005f || Math.abs(deltaRoll) > 0.005f
                 val arr = cameraCtrl.rgbSensorActiveArray
-                val imgW = arr?.width() ?: vw.toInt()
-                val imgH = arr?.height() ?: vh.toInt()
-                val dist = if (intrinsics != null && intrinsics.size >= 4) {
-                    if (hasRotation)
-                        MeasurementEngine.compute3DDistanceIntrinsicRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH, deltaPitch, deltaRoll)
-                    else
-                        MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
-                } else {
-                    if (hasRotation)
-                        MeasurementEngine.compute3DDistanceRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees(), deltaPitch, deltaRoll)
-                    else
-                        MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
-                }
+                val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
                 val rawUnc = if (intrinsics != null && intrinsics.size >= 4) {
-                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, imgW, imgH)
+                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(firstPoint!!.x, firstPoint!!.y, x, y, d1, d2, u1, u2, vw, vh, intrinsics, imgW, imgH)
                 } else {
-                    MeasurementEngine.compute3DDistanceUncertaintyFOV(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    MeasurementEngine.compute3DDistanceUncertaintyFOV(firstPoint!!.x, firstPoint!!.y, x, y, d1, d2, u1, u2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
-                val edge1 = MeasurementEngine.edgeUncertaintyMultiplier(p1.x, p1.y, vw, vh)
-                val edge2 = MeasurementEngine.edgeUncertaintyMultiplier(p2.x, p2.y, vw, vh)
+                val edge1 = MeasurementEngine.edgeUncertaintyMultiplier(firstPoint!!.x, firstPoint!!.y, vw, vh)
+                val edge2 = MeasurementEngine.edgeUncertaintyMultiplier(x, y, vw, vh)
                 val motionConfidence = when {
                     !imuAvail -> 1f; motion?.excessive == true -> 1.5f
                     motion != null && motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
@@ -546,7 +609,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
                     val displayText = listOfNotNull(measuredResult + uncStr, motionWarn, consistencyWarn).joinToString("  ")
                     binding.tvDistance.text = displayText
-                    binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
+                    binding.overlayView.lines = listOf(Pair(p1Screen, p2Screen)); binding.overlayView.showLineLabels = true
                     binding.overlayView.lineDistanceLabels = listOf(displayText)
                     updateOverlay(); firstPoint = null
                     binding.overlayView.animateLineExpand()
@@ -658,6 +721,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
         synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
+        firstWorld3D = null; secondWorld3D = null
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.progressBar.visibility = android.view.View.GONE
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList()
@@ -785,7 +849,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f; binding.overlayView.deviceIsLevel = false; updateOverlay() }
+            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; firstWorld3D = null; secondWorld3D = null; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f; binding.overlayView.deviceIsLevel = false; updateOverlay() }
             else -> resetMeasurement()
         }
     }

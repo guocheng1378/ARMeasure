@@ -342,6 +342,80 @@ object MeasurementEngine {
         return (w1 * d1 + w2 * d2) / (w1 + w2)
     }
 
+    // ── 3D Coordinate Conversions (Apple-like world-anchored points) ──
+
+    /**
+     * Convert screen position + depth to 3D world coordinates (camera intrinsic model).
+     * @return (wx, wy, wz) in cm, in camera coordinate frame at the time of measurement
+     */
+    fun screenTo3DIntrinsic(
+        sx: Float, sy: Float, depthCm: Float,
+        viewW: Float, viewH: Float,
+        intrinsics: FloatArray, imgW: Int, imgH: Int
+    ): Triple<Float, Float, Float> {
+        val fx = intrinsics[0]; val fy = intrinsics[1]
+        val cx = intrinsics[2]; val cy = intrinsics[3]
+        val ix = sx / viewW * imgW; val iy = sy / viewH * imgH
+        return Triple(depthCm * (ix - cx) / fx, depthCm * (iy - cy) / fy, depthCm)
+    }
+
+    /**
+     * Convert screen position + depth to 3D world coordinates (FOV model).
+     */
+    fun screenTo3DFOV(
+        sx: Float, sy: Float, depthCm: Float,
+        viewW: Float, viewH: Float,
+        hfovDeg: Double, vfovDeg: Double
+    ): Triple<Float, Float, Float> {
+        val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
+        val nx = ((sx / viewW - 0.5f) * 2f).toDouble().coerceIn(-clamp, clamp)
+        val ny = ((0.5f - sy / viewH) * 2f).toDouble().coerceIn(-clamp, clamp)
+        val hfov = Math.toRadians(hfovDeg); val vfov = Math.toRadians(vfovDeg)
+        return Triple(
+            depthCm * Math.tan(nx * hfov / 2).toFloat(),
+            depthCm * Math.tan(ny * vfov / 2).toFloat(),
+            depthCm
+        )
+    }
+
+    /**
+     * Project 3D world coordinates back to screen position (intrinsic model).
+     * @return (screenX, screenY) in view coordinates
+     */
+    fun worldToScreenIntrinsic(
+        wx: Float, wy: Float, wz: Float,
+        viewW: Float, viewH: Float,
+        intrinsics: FloatArray, imgW: Int, imgH: Int
+    ): Pair<Float, Float> {
+        val fx = intrinsics[0]; val fy = intrinsics[1]
+        val cx = intrinsics[2]; val cy = intrinsics[3]
+        val px = wx * fx / wz + cx
+        val py = wy * fy / wz + cy
+        return Pair(px / imgW * viewW, py / imgH * viewH)
+    }
+
+    /**
+     * Project 3D world coordinates back to screen position (FOV model).
+     */
+    fun worldToScreenFOV(
+        wx: Float, wy: Float, wz: Float,
+        viewW: Float, viewH: Float,
+        hfovDeg: Double, vfovDeg: Double
+    ): Pair<Float, Float> {
+        val hfov = Math.toRadians(hfovDeg); val vfov = Math.toRadians(vfovDeg)
+        val nx = if (wz > 0) Math.atan((wx / wz).toDouble()) / (hfov / 2) else 0.0
+        val ny = if (wz > 0) Math.atan((wy / wz).toDouble()) / (vfov / 2) else 0.0
+        val sx = (nx / 2.0 + 0.5) * viewW
+        val sy = (0.5 - ny / 2.0) * viewH
+        return Pair(sx.toFloat(), sy.toFloat())
+    }
+
+    /** Euclidean distance between two 3D points. */
+    fun distance3D(p1: Triple<Float, Float, Float>, p2: Triple<Float, Float, Float>): Float {
+        val dx = p1.first - p2.first; val dy = p1.second - p2.second; val dz = p1.third - p2.third
+        return sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
     /** Median of a sorted Float list. Assumes list is non-empty and sorted. */
     private fun List<Float>.median(): Float {
         val n = size
