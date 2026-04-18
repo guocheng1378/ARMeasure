@@ -24,6 +24,8 @@ class MeasureOverlayView @JvmOverloads constructor(
     var lineDistanceLabels: List<String> = emptyList()
     var placingSecondPoint: Boolean = false
     var liveCrosshair: PointF? = null
+    /** Live distance preview between first point and current cursor (cm). -1 = no data. */
+    var liveDistanceCm: Float = -1f
     var surfaceDetected: Boolean = false
     var showTutorial: Boolean = false
 
@@ -67,9 +69,6 @@ class MeasureOverlayView @JvmOverloads constructor(
     }
     private val crossActiveP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2f
-    }
-    private val placeCrossP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF88"); style = Paint.Style.STROKE; strokeWidth = 1.5f
     }
     private val areaFillP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#226699FF"); style = Paint.Style.FILL }
     private val areaFillLiveP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#156699FF"); style = Paint.Style.FILL }
@@ -226,11 +225,26 @@ class MeasureOverlayView @JvmOverloads constructor(
             if (lineExpandProgress > 0.3f) {
                 drawExt(canvas, ax1, ay1, ax2, ay2)
                 drawArrow(canvas, ax1, ay1, ax2, ay2); drawArrow(canvas, ax2, ay2, ax1, ay1)
+                // Apple-style endpoint markers on completed line
+                if (lineExpandProgress > 0.8f) {
+                    drawEndpointMarker(canvas, ax1, ay1, true)
+                    drawEndpointMarker(canvas, ax2, ay2, true)
+                }
             }
         }
 
         if (placingSecondPoint && points.size == 1 && liveCrosshair != null) {
-            canvas.drawLine(points[0].x, points[0].y, liveCrosshair!!.x, liveCrosshair!!.y, previewP)
+            val p0 = points[0]; val cur = liveCrosshair!!
+            // Live preview line
+            canvas.drawLine(p0.x, p0.y, cur.x, cur.y, previewP)
+            // Extension ticks at both endpoints (Apple style)
+            drawEndpointMarker(canvas, p0.x, p0.y, true)
+            drawEndpointMarker(canvas, cur.x, cur.y, false)
+            // Live distance label at midpoint
+            if (liveDistanceCm > 0) {
+                val mx = (p0.x + cur.x) / 2f; val my = (p0.y + cur.y) / 2f
+                drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
+            }
         }
 
         if (lineExpandProgress > 0.6f) {
@@ -268,10 +282,7 @@ class MeasureOverlayView @JvmOverloads constructor(
             canvas.drawCircle(cx, cy, 3f, dotP)
         }
 
-        if (placingSecondPoint && points.size == 1) {
-            canvas.drawLine(points[0].x - 24, points[0].y, points[0].x + 24, points[0].y, placeCrossP)
-            canvas.drawLine(points[0].x, points[0].y - 24, points[0].x, points[0].y + 24, placeCrossP)
-        }
+        // First point marker is now drawn via drawEndpointMarker in the placingSecondPoint block above
     }
 
     private fun drawExt(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float) {
@@ -287,6 +298,29 @@ class MeasureOverlayView @JvmOverloads constructor(
         val bx = fx + ux*8f; val by = fy + uy*8f
         arrowPath.reset(); arrowPath.moveTo(fx, fy); arrowPath.lineTo(bx + px*4f, by + py*4f); arrowPath.lineTo(bx - px*4f, by - py*4f); arrowPath.close()
         c.drawPath(arrowPath, arrowP)
+    }
+
+    /** Apple-style endpoint marker: ⊕ crosshair with concentric ring. */
+    private val endpointLineP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2f
+    }
+    private val endpointRingP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.5f
+    }
+    private val endpointRingOuterP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#60FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 1f
+    }
+    private fun drawEndpointMarker(c: Canvas, x: Float, y: Float, anchored: Boolean) {
+        val r = 16f; val tick = 10f
+        // Crosshair
+        c.drawLine(x - tick, y, x + tick, y, endpointLineP)
+        c.drawLine(x, y - tick, x, y + tick, endpointLineP)
+        // Inner ring
+        c.drawCircle(x, y, r, endpointRingP)
+        // Outer ring (faded) for anchored point
+        if (anchored) c.drawCircle(x, y, r + 6f, endpointRingOuterP)
+        // Center dot
+        c.drawCircle(x, y, 2.5f, dotP)
     }
 
     private fun drawLabel(c: Canvas, text: String, x: Float, y: Float) {

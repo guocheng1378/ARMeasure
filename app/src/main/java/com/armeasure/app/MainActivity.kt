@@ -100,6 +100,34 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.onMove = { x, y ->
             if (binding.overlayView.placingSecondPoint) {
                 binding.overlayView.liveCrosshair = PointF(x, y)
+                // Live depth tracking for second point (Apple-like real-time preview)
+                if (firstPoint != null && firstDistance > 0) {
+                    backgroundHandler?.post {
+                        val d2 = getDistanceAt(x, y, skipImu = true)
+                        if (d2 != null && d2 > 0) {
+                            val vw = cachedViewWidth; val vh = cachedViewHeight
+                            val dist = if (vw > 0 && vh > 0) {
+                                val intrinsics = cameraCtrl.intrinsicCalibration
+                                val arr = cameraCtrl.rgbSensorActiveArray
+                                if (intrinsics != null && intrinsics.size >= 4 && arr != null) {
+                                    MeasurementEngine.compute3DDistanceIntrinsic(
+                                        firstPoint!!.x, firstPoint!!.y, x, y,
+                                        firstDistance, d2, vw, vh, intrinsics, arr.width(), arr.height()
+                                    )
+                                } else {
+                                    MeasurementEngine.compute3DDistance(
+                                        firstPoint!!.x, firstPoint!!.y, x, y,
+                                        firstDistance, d2, vw, vh, getHfovDegrees(), getVfovDegrees()
+                                    )
+                                }
+                            } else -1f
+                            runOnUiThread {
+                                binding.overlayView.liveDistanceCm = dist
+                                binding.overlayView.invalidate()
+                            }
+                        }
+                    }
+                }
                 binding.overlayView.invalidate()
             }
         }
@@ -453,6 +481,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
             binding.overlayView.placingSecondPoint = false
             binding.overlayView.liveCrosshair = null
+            binding.overlayView.liveDistanceCm = -1f
             binding.overlayView.triggerPulse(x, y)
             val imuAvail = imuHelper.isAvailable()
             // Fix #1: get rotation delta BEFORE markPoint (markPoint resets accumulators)
@@ -625,7 +654,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.areaPoints = emptyList(); binding.overlayView.showLineLabels = false
         binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
         binding.overlayView.lineDistanceLabels = emptyList(); binding.overlayView.placingSecondPoint = false
-        binding.overlayView.liveCrosshair = null
+        binding.overlayView.liveCrosshair = null; binding.overlayView.liveDistanceCm = -1f
         depthFilter.reset(); tofHelper.reset()
         if (imuHelper.isAvailable()) imuHelper.reset()
         currentFocusDistance = -1f; depthBuffer = null
@@ -744,7 +773,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; updateOverlay() }
+            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; updateOverlay() }
             else -> resetMeasurement()
         }
     }
