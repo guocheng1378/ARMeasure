@@ -26,6 +26,12 @@ class MeasureOverlayView @JvmOverloads constructor(
     var liveCrosshair: PointF? = null
     /** Live distance preview between first point and current cursor (cm). -1 = no data. */
     var liveDistanceCm: Float = -1f
+    /** Depth at first point (cm). Shown as small label near endpoint. */
+    var firstPointDepthCm: Float = -1f
+    /** Depth at second/live point (cm). */
+    var secondPointDepthCm: Float = -1f
+    /** Whether device is roughly level (tilt < threshold). */
+    var deviceIsLevel: Boolean = false
     var surfaceDetected: Boolean = false
     var showTutorial: Boolean = false
 
@@ -245,6 +251,17 @@ class MeasureOverlayView @JvmOverloads constructor(
                 val mx = (p0.x + cur.x) / 2f; val my = (p0.y + cur.y) / 2f
                 drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
             }
+            // Per-point depth labels (small, near each endpoint)
+            if (firstPointDepthCm > 0) {
+                drawDepthLabel(canvas, String.format("%.0fcm", firstPointDepthCm), p0.x, p0.y, above = true)
+            }
+            if (secondPointDepthCm > 0) {
+                drawDepthLabel(canvas, String.format("%.0fcm", secondPointDepthCm), cur.x, cur.y, above = true)
+            }
+            // Level indicator (Apple style: shows when phone is roughly horizontal)
+            if (deviceIsLevel) {
+                drawLevelBadge(canvas)
+            }
         }
 
         if (lineExpandProgress > 0.6f) {
@@ -321,6 +338,47 @@ class MeasureOverlayView @JvmOverloads constructor(
         if (anchored) c.drawCircle(x, y, r + 6f, endpointRingOuterP)
         // Center dot
         c.drawCircle(x, y, 2.5f, dotP)
+    }
+
+    /** Small depth label near endpoint (e.g. "120cm"). */
+    private val depthTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#CCFFFFFF"); textSize = 18f
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+        textAlign = Paint.Align.CENTER
+    }
+    private val depthTxtBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#99000000"); style = Paint.Style.FILL
+    }
+    private fun drawDepthLabel(c: Canvas, text: String, x: Float, y: Float, above: Boolean) {
+        depthTxtP.getTextBounds(text, 0, text.length, rRect)
+        val w = rRect.width() / 2f + 8f; val h = rRect.height() / 2f + 4f
+        val ly = if (above) y - 28f else y + 36f
+        val rect = RectF(x - w, ly - h, x + w, ly + h)
+        c.drawRoundRect(rect, 6f, 6f, depthTxtBgP)
+        c.drawText(text, x, ly + rRect.height() / 2f, depthTxtP)
+    }
+
+    /** Level indicator badge (Apple style: green pill when device is level). */
+    private val levelTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00FF88"); textSize = 20f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+    }
+    private val levelBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#B3000000"); style = Paint.Style.FILL
+    }
+    private val levelBorderP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#8000FF88"); style = Paint.Style.STROKE; strokeWidth = 1.5f
+    }
+    private fun drawLevelBadge(c: Canvas) {
+        val text = "◎ 水平"
+        levelTxtP.getTextBounds(text, 0, text.length, rRect)
+        val cx = width / 2f; val y = 50f
+        val w = rRect.width() / 2f + 16f; val h = rRect.height() / 2f + 8f
+        val rect = RectF(cx - w, y - h, cx + w, y + h)
+        c.drawRoundRect(rect, h, h, levelBgP)
+        c.drawRoundRect(rect, h, h, levelBorderP)
+        c.drawText(text, cx, y + rRect.height() / 2f, levelTxtP)
     }
 
     private fun drawLabel(c: Canvas, text: String, x: Float, y: Float) {

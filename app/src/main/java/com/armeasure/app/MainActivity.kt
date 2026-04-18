@@ -121,8 +121,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                                     )
                                 }
                             } else -1f
+                            // Level detection: tiltAngle < 3° ≈ level
+                            val isLevel = imuHelper.isAvailable() && Math.abs(Math.toDegrees(imuHelper.tiltAngle.toDouble())) < 3.0
                             runOnUiThread {
                                 binding.overlayView.liveDistanceCm = dist
+                                binding.overlayView.secondPointDepthCm = d2
+                                binding.overlayView.deviceIsLevel = isLevel
                                 binding.overlayView.invalidate()
                             }
                         }
@@ -475,13 +479,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }) { result ->
                 firstDistance = result?.depthCm ?: 0f
                 firstUncertainty = result?.uncertaintyCm ?: 0f
-                runOnUiThread { binding.tvDistance.text = "标记第二点..." }
+                runOnUiThread {
+                    binding.overlayView.firstPointDepthCm = firstDistance
+                    binding.tvDistance.text = "标记第二点..."
+                }
             }
         } else {
             val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
             binding.overlayView.placingSecondPoint = false
             binding.overlayView.liveCrosshair = null
             binding.overlayView.liveDistanceCm = -1f
+            binding.overlayView.firstPointDepthCm = -1f
+            binding.overlayView.secondPointDepthCm = -1f
+            binding.overlayView.deviceIsLevel = false
             binding.overlayView.triggerPulse(x, y)
             val imuAvail = imuHelper.isAvailable()
             // Fix #1: get rotation delta BEFORE markPoint (markPoint resets accumulators)
@@ -655,6 +665,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
         binding.overlayView.lineDistanceLabels = emptyList(); binding.overlayView.placingSecondPoint = false
         binding.overlayView.liveCrosshair = null; binding.overlayView.liveDistanceCm = -1f
+        binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f
+        binding.overlayView.deviceIsLevel = false
         depthFilter.reset(); tofHelper.reset()
         if (imuHelper.isAvailable()) imuHelper.reset()
         currentFocusDistance = -1f; depthBuffer = null
@@ -773,7 +785,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; updateOverlay() }
+            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f; binding.overlayView.deviceIsLevel = false; updateOverlay() }
             else -> resetMeasurement()
         }
     }
