@@ -2,8 +2,8 @@ package com.armeasure.app
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
 import android.graphics.*
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -16,7 +16,9 @@ import android.view.SurfaceHolder
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.FileProvider
 import com.armeasure.app.databinding.ActivityMainBinding
+import java.io.File
 import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Callback {
@@ -29,8 +31,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     @Volatile private var depthBuffer: ShortArray? = null
     @Volatile private var depthWidth: Int = 0
     @Volatile private var depthHeight: Int = 0
-    private val depthLock = Any() // Fix #6: synchronize depth buffer access between BG and UI threads
+    private val depthLock = Any()
     private val depthFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 2000f, maxRangeMm = 5000f, processNoise = 300f, initMeasureNoise = 300f)
+
+    // Multi-frame temporal smoothing
+    private val temporalLock = Any()
+    private val temporalFrames = ArrayDeque<ShortArray>(AppConstants.TEMPORAL_FRAME_COUNT)
 
     private var backgroundHandler: Handler? = null
     private var backgroundThread: HandlerThread? = null
@@ -40,12 +46,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private enum class MeasureUnit { CM, INCH, M }
     private var currentUnit = MeasureUnit.CM
 
-    // Calibration
     private var calibrationFactor = 1.0f
     private var isCalibrated = false
     private var calibrating = false
 
-    // History
     private val historyPrefs by lazy { getSharedPreferences("armeasure_history", MODE_PRIVATE) }
     private val measurementHistory = mutableListOf<HistoryEntry>()
     data class HistoryEntry(val timestamp: Long, val mode: String, val result: String, val unit: String)
@@ -60,16 +64,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
     private val sweepLock = Any()
-    // #2: depthCache synchronized access
     private val depthCache = mutableMapOf<Int, Float>()
     private val depthCacheLock = Any()
     private val maxSweepHistory = 200
 
-    // ── Cached surface dimensions for thread-safe access (#1) ──
     @Volatile private var cachedViewWidth: Float = 0f
     @Volatile private var cachedViewHeight: Float = 0f
 
-    // ── Debounce ──
     private var lastTapTime = 0L
     private var lastModeClickTime = 0L
     private var lastUndoClickTime = 0L
@@ -82,12 +83,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Thread.setDefaultUncaughtExceptionHandler { _, e ->
-            try { java.io.File(getExternalFilesDir(null), "crash.log").run { if (length() > 512*1024) delete(); appendText("${java.util.Date()} ${e.stackTraceToString()}\n\n") } } catch (_: Exception) {}
+            try { File(getExternalFilesDir(null), "crash.log").run { if (length() > 512*1024) delete(); appendText("${java.util.Date()} ${e.stackTraceToString()}\n\n") } } catch (_: Exception) {}
             throw e
         }
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        startBackgroundThread()  // Must start before CameraController so backgroundHandler is ready
+        startBackgroundThread()
         val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val sm = getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
         cameraCtrl = CameraController(this, cm, backgroundHandler, binding.surfaceView)
@@ -109,6 +110,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
         }
+        // Show tutorial on first launch
+        val tutPrefs = getSharedPreferences(AppConstants.TUTORIAL_PREF, MODE_PRIVATE)
+        if (!tutPrefs.getBoolean(AppConstants.TUTORIAL_SHOWN_KEY, false)) {
+            binding.overlayView.showTutorial = true
+            binding.overlayView.invalidate()
+            tutPrefs.edit().putBoolean(AppConstants.TUTORIAL_SHOWN_KEY, true).apply()
+        }
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
@@ -116,7 +124,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (code == REQUEST_CAMERA) {
             if (results.isEmpty() || results[0] != PackageManager.PERMISSION_GRANTED) {
                 Toast.makeText(this, "需要相机权限才能使用测距功能", Toast.LENGTH_LONG).show()
-                // #5: Don't immediately finish — let user retry by showing rationale
                 binding.tvSensor.text = "❌ 需要相机权限"
                 binding.tvDistance.text = "请授予相机权限后重启应用"
             }
@@ -134,7 +141,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     override fun onPause() {
         tofHelper.unregisterListener(this); imuHelper.stop()
         cameraCtrl.close(); stopBackgroundThread()
-        // Clear depth data after camera is closed and callbacks are stopped
         depthBuffer = null; depthBufReusable = null
         calibrating = false
         super.onPause()
@@ -143,10 +149,40 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     override fun onSensorChanged(event: SensorEvent) { tofHelper.onSensorEvent(event) }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
+    // ── Haptic feedback ──────────────────────────────────────
+
+    private fun haptic() {
+        try {
+            val v = if (Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+                    else @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            v.vibrate(VibrationEffect.createOneShot(AppConstants.HAPTIC_TAP_MS, VibrationEffect.DEFAULT_AMPLITUDE))
+        } catch (_: Exception) {}
+    }
+
+    private fun hapticComplete() {
+        try {
+            val v = if (Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+                    else @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            // Double pulse for measurement complete
+            val timings = longArrayOf(0, AppConstants.HAPTIC_COMPLETE_MS, AppConstants.HAPTIC_COMPLETE_GAP_MS, AppConstants.HAPTIC_COMPLETE_MS)
+            val amps = intArrayOf(0, VibrationEffect.DEFAULT_AMPLITUDE, 0, VibrationEffect.DEFAULT_AMPLITUDE)
+            v.vibrate(VibrationEffect.createWaveform(timings, amps, -1))
+        } catch (_: Exception) {}
+    }
+
+    private fun hapticWarning() {
+        try {
+            val v = if (Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+                    else @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            v.vibrate(VibrationEffect.createOneShot(AppConstants.HAPTIC_WARNING_MS, VibrationEffect.DEFAULT_AMPLITUDE))
+        } catch (_: Exception) {}
+    }
+
+    // ── Camera ───────────────────────────────────────────────
+
     private fun startCamera() {
         if (cameraOpening || cameraCtrl.cameraDevice != null) return
         cameraOpening = true
-        // Fix #8: invalidate FOV cache on new camera session
         cachedHfov = Double.NaN; cachedVfov = Double.NaN
         val selection = cameraCtrl.selectCameras() ?: run { binding.tvSensor.text = "无可用摄像头"; cameraOpening = false; return }
         cameraCtrl.onDepthImageAvailable = { reader -> processDepthImage(reader) }
@@ -155,9 +191,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val fd = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
                 if (fd != null && fd > 0) {
                     val newFocus = 1f / fd
-                    // #4: reset depth filter when focus distance changes significantly
                     if (currentFocusDistance > 0 && Math.abs(newFocus - currentFocusDistance) > AppConstants.FOCUS_RESET_THRESHOLD) {
                         depthFilter.reset()
+                        synchronized(temporalLock) { temporalFrames.clear() }
                         Log.d(TAG, "Focus changed: ${currentFocusDistance}→$newFocus, filter reset")
                     }
                     currentFocusDistance = newFocus
@@ -167,9 +203,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         cameraCtrl.openCamera(selection, onReady = { same ->
             cameraOpening = false
             updateSensorLabel()
-            // NOTE: openCamera() already calls setupPreviewSession() in its onOpened callback.
-            // Do NOT call setupPreviewSession() here again — it destroys+recreates the capture session,
-            // causing the preview to flash/switch back and forth.
         }, onError = { cameraOpening = false })
     }
 
@@ -195,8 +228,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         }
         cameraOpening = true
         depthBuffer = null
-
-        // #15: Don't update button state until toggle actually succeeds
         cameraCtrl.toggleDepthCamera { enabled ->
             cameraOpening = false
             runOnUiThread {
@@ -211,19 +242,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun updateDepthToggleButton() {
         val enabled = cameraCtrl.depthCameraEnabled
         binding.btnDepthToggle.text = if (enabled) "深度:开" else "深度:关"
-        binding.btnDepthToggle.setBackgroundColor(
-            if (enabled) 0x3300FF88.toInt() else 0x00000000
-        )
+        binding.btnDepthToggle.setBackgroundColor(if (enabled) 0x3300FF88.toInt() else 0x00000000)
     }
 
-    // #1: Thread-safe — uses cached dimensions instead of reading View properties
+    // ── Measurement ──────────────────────────────────────────
+
     private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null): Float? {
         var raw: Float? = null
-        // Try depth map first, then ToF, then AF focus distance
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy, depthFilterOverride ?: depthFilter)
         val tofDist = tofHelper.getDistanceCm()
-
-        // Depth fusion: when both depth map and ToF are available, combine them
         if (raw != null && raw > 0 && tofDist != null && tofDist > 0) {
             val tofVar = AppConstants.TOF_VARIANCE
             val depthVar = if (raw < AppConstants.DEPTH16_CLOSE_THRESHOLD_CM) AppConstants.DEPTH16_VARIANCE_CLOSE else AppConstants.DEPTH16_VARIANCE_FAR
@@ -242,13 +269,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     data class DepthResult(val depthCm: Float, val uncertaintyCm: Float)
 
-    /**
-     * Collect multiple depth samples at a screen point across frames.
-     * Uses median + MAD outlier rejection for robustness.
-     * Returns both the robust depth and the sample standard deviation as uncertainty.
-     */
     private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = AppConstants.DEPTH_SAMPLE_COUNT, intervalMs: Long = AppConstants.DEPTH_SAMPLE_INTERVAL_MS, onProgress: ((Int, Int) -> Unit)? = null, onComplete: (DepthResult?) -> Unit) {
-        // #1 + #2: Handler chain instead of Thread.sleep, with progress callback
         val localFilter = DistanceFilter(
             windowSize = AppConstants.DEPTH_WINDOW_SIZE, alpha = 0.4f,
             maxJumpMm = AppConstants.DEPTH_MAX_JUMP_MM, maxRangeMm = AppConstants.DEPTH_MAX_RANGE_MM,
@@ -256,7 +277,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         )
         val samples = mutableListOf<Float>()
         var sampleIndex = 0
-
         fun nextSample() {
             if (sampleIndex >= sampleCount) {
                 val robust = MeasurementEngine.robustDepth(samples)
@@ -272,11 +292,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             if (d != null && d > 0) samples.add(d)
             sampleIndex++
             onProgress?.invoke(sampleIndex, sampleCount)
-            if (sampleIndex < sampleCount) {
-                backgroundHandler?.postDelayed({ nextSample() }, intervalMs)
-            } else {
-                nextSample()  // last sample, complete immediately
-            }
+            if (sampleIndex < sampleCount) backgroundHandler?.postDelayed({ nextSample() }, intervalMs)
+            else nextSample()
         }
         nextSample()
     }
@@ -285,21 +302,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var cachedVfov: Double = Double.NaN
 
     private fun convertUnit(cm: Float): Pair<Float, String> = when (currentUnit) {
-        MeasureUnit.CM -> Pair(cm, "cm")
-        MeasureUnit.INCH -> Pair(cm / 2.54f, "in")
-        MeasureUnit.M -> Pair(cm / 100f, "m")
+        MeasureUnit.CM -> Pair(cm, "cm"); MeasureUnit.INCH -> Pair(cm / 2.54f, "in"); MeasureUnit.M -> Pair(cm / 100f, "m")
     }
-
-    private fun formatDistance(cm: Float): String {
-        val (v, u) = convertUnit(cm)
-        return String.format("%.1f %s", v, u)
-    }
-
+    private fun formatDistance(cm: Float): String { val (v, u) = convertUnit(cm); return String.format("%.1f %s", v, u) }
     private fun formatArea(cm2: Float): String {
         val (v, u) = when (currentUnit) {
-            MeasureUnit.CM -> Pair(cm2, "cm²")
-            MeasureUnit.INCH -> Pair(cm2 / (2.54f * 2.54f), "in²")
-            MeasureUnit.M -> Pair(cm2 / 10000f, "m²")
+            MeasureUnit.CM -> Pair(cm2, "cm²"); MeasureUnit.INCH -> Pair(cm2 / (2.54f * 2.54f), "in²"); MeasureUnit.M -> Pair(cm2 / 10000f, "m²")
         }
         return String.format("%.1f %s", v, u)
     }
@@ -319,13 +327,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val now = System.currentTimeMillis()
         if (now - lastTapTime < AppConstants.TAP_DEBOUNCE_MS) return
         lastTapTime = now
+        // Tap ripple feedback
+        binding.overlayView.triggerRipple(x, y)
         triggerAutoFocus(x, y); haptic()
-        // AF needs more settling time than depth-based modes
         val settleMs = if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) AppConstants.SETTLE_MS_DEPTH else AppConstants.SETTLE_MS_AF
-        if (calibrating) {
-            backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, settleMs)
-            return
-        }
+        if (calibrating) { backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, settleMs); return }
         backgroundHandler?.postDelayed({ runOnUiThread { measureAtPoint(x, y) } }, settleMs)
     }
 
@@ -338,10 +344,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.updateSweepText(String.format("%.1f cm", dist))
                     synchronized(sweepLock) {
                         sweepHistory.add(Pair(x, dist))
-                        // #3: Remove from front until within limit (not double removeAt)
-                        while (sweepHistory.size > maxSweepHistory) {
-                            sweepHistory.removeAt(0)
-                        }
+                        while (sweepHistory.size > maxSweepHistory) sweepHistory.removeAt(0)
                         binding.overlayView.sweepHistory = sweepHistory.toList()
                     }
                     binding.tvDistance.text = formatDistance(dist)
@@ -361,10 +364,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         try {
             val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             req.addTarget(sv.holder.surface)
-            // Fix #3: also include depth surface in AF request when depth is active on same camera
-            if (cameraCtrl.depthStreamActive && cameraCtrl.depthReader != null) {
-                req.addTarget(cameraCtrl.depthReader!!.surface)
-            }
+            if (cameraCtrl.depthStreamActive && cameraCtrl.depthReader != null) req.addTarget(cameraCtrl.depthReader!!.surface)
             req.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             req.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
             req.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
@@ -374,10 +374,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     if (fd != null && fd > 0) currentFocusDistance = 1f / fd
                     try {
                         val res = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW); res.addTarget(sv.holder.surface)
-                        // Fix #3: restore depth surface in repeating request
-                        if (cameraCtrl.depthStreamActive && cameraCtrl.depthReader != null) {
-                            res.addTarget(cameraCtrl.depthReader!!.surface)
-                        }
+                        if (cameraCtrl.depthStreamActive && cameraCtrl.depthReader != null) res.addTarget(cameraCtrl.depthReader!!.surface)
                         res.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         session.setRepeatingRequest(res.build(), cameraCtrl.captureCallback, backgroundHandler)
                     } catch (_: Exception) {}
@@ -386,15 +383,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         } catch (e: CameraAccessException) { Log.e(TAG, "AF fail", e) }
     }
 
-    private fun haptic() {
-        try {
-            val v = if (Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
-                    else @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            v.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE))
-        } catch (_: Exception) {}
-    }
-
     private fun measureAtPoint(x: Float, y: Float) {
+        // Show loading indicator
+        binding.progressBar.visibility = android.view.View.VISIBLE
         when (currentMode) {
             Mode.POINT -> handlePointTap(x, y)
             Mode.LINE -> handleLineTap(x, y)
@@ -415,13 +406,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val unc = result?.uncertaintyCm ?: 0f
             val uncStr = if (unc > 0.5f) "  ±${String.format("%.1f", unc)}cm" else ""
             runOnUiThread {
+                binding.progressBar.visibility = android.view.View.GONE
                 measuredResult = when {
                     dist != null -> formatDistance(dist) + uncStr
                     tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"
                     else -> "对焦中..."
                 }
                 binding.tvDistance.text = measuredResult; updateOverlay()
-                if (dist != null && dist > 0) saveToHistory(formatDistance(dist), "单点")
+                if (dist != null && dist > 0) { hapticComplete(); saveToHistory(formatDistance(dist), "单点") }
             }
         }
     }
@@ -430,14 +422,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (firstPoint == null) {
             firstPoint = PointF(x, y)
             overlayPoints.clear(); overlayPoints.add(PointF(x, y))
-            // Apple-style: pulse + placement state
             binding.overlayView.placingSecondPoint = true
             binding.overlayView.triggerPulse(x, y)
             binding.tvDistance.text = "采样中(1/2)..."
             updateOverlay()
-            // Mark IMU snapshot for motion detection
             if (imuHelper.isAvailable()) imuHelper.markPoint()
-            // Multi-sample depth for first point — async with progress
             collectDepthSamples(x, y, onProgress = { cur, total ->
                 runOnUiThread { binding.tvDistance.text = "采样中(1/2) $cur/$total..." }
             }) { result ->
@@ -447,74 +436,47 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }
         } else {
             val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
-            // Apple-style: pulse + clear placement state
             binding.overlayView.placingSecondPoint = false
             binding.overlayView.liveCrosshair = null
             binding.overlayView.triggerPulse(x, y)
-            // Check IMU motion between two taps
             val imuAvail = imuHelper.isAvailable()
             val motion = if (imuAvail) imuHelper.checkMotionSince() else null
             val motionWarn = motion?.warning
+            if (motionWarn != null) hapticWarning()
             binding.tvDistance.text = "采样中(2/2)..."
             updateOverlay()
-            // Multi-sample depth for second point — async
-            val d1 = firstDistance
-            val u1 = firstUncertainty
-
+            val d1 = firstDistance; val u1 = firstUncertainty
             collectDepthSamples(x, y, onProgress = { cur, total ->
                 runOnUiThread { binding.tvDistance.text = "采样中(2/2) $cur/$total..." }
             }) { result2 ->
-                val d2 = result2?.depthCm ?: d1
-                val u2 = result2?.uncertaintyCm ?: 0f
-
-                // Depth consistency check
+                val d2 = result2?.depthCm ?: d1; val u2 = result2?.uncertaintyCm ?: 0f
                 val depthRatio = if (d1 > 0 && d2 > 0) maxOf(d1, d2) / minOf(d1, d2) else 1f
                 val consistencyWarn = if (depthRatio > AppConstants.DEPTH_CONSISTENCY_MAX_RATIO)
                     "⚠️ 两点平面差距大(${String.format("%.1f", depthRatio)}x)" else null
-
-                // Use cached surface dimensions for thread safety
                 val vw = cachedViewWidth; val vh = cachedViewHeight
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val dist = if (intrinsics != null && intrinsics.size >= 4) {
                     val arr = cameraCtrl.rgbSensorActiveArray
-                    val imgW = arr?.width() ?: vw.toInt()
-                    val imgH = arr?.height() ?: vh.toInt()
-                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, arr?.width() ?: vw.toInt(), arr?.height() ?: vh.toInt())
                 } else {
                     MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
-
-                // Proper uncertainty propagation through 3D distance formula
                 val rawUnc = if (intrinsics != null && intrinsics.size >= 4) {
                     val arr = cameraCtrl.rgbSensorActiveArray
-                    val imgW = arr?.width() ?: vw.toInt()
-                    val imgH = arr?.height() ?: vh.toInt()
-                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(
-                        p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, imgW, imgH)
+                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, arr?.width() ?: vw.toInt(), arr?.height() ?: vh.toInt())
                 } else {
-                    MeasurementEngine.compute3DDistanceUncertaintyFOV(
-                        p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    MeasurementEngine.compute3DDistanceUncertaintyFOV(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
-
-                // Edge penalty: edge pixels have larger angular error
                 val edge1 = MeasurementEngine.edgeUncertaintyMultiplier(p1.x, p1.y, vw, vh)
                 val edge2 = MeasurementEngine.edgeUncertaintyMultiplier(p2.x, p2.y, vw, vh)
-                val edgePenalty = (edge1 + edge2) / 2f
-
-                // IMU motion discount: motion degrades depth reliability
                 val motionConfidence = when {
-                    !imuAvail -> 1f
-                    motion != null -> when {
-                        motion.excessive -> 1.5f   // inflate uncertainty by 50%
-                        motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
-                        else -> 1f
-                    }
+                    !imuAvail -> 1f; motion?.excessive == true -> 1.5f
+                    motion != null && motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
                     else -> 1f
                 }
-
-                val totalUnc = rawUnc * edgePenalty * motionConfidence
-
+                val totalUnc = rawUnc * (edge1 + edge2) / 2f * motionConfidence
                 runOnUiThread {
+                    binding.progressBar.visibility = android.view.View.GONE
                     measuredResult = formatDistance(dist)
                     val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
                     val displayText = listOfNotNull(measuredResult + uncStr, motionWarn, consistencyWarn).joinToString("  ")
@@ -522,8 +484,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
                     binding.overlayView.lineDistanceLabels = listOf(displayText)
                     updateOverlay(); firstPoint = null
-                    binding.overlayView.animateLineExpand()  // expand animation
-                    saveToHistory(measuredResult, "两点")
+                    binding.overlayView.animateLineExpand()
+                    hapticComplete(); saveToHistory(measuredResult, "两点")
                 }
             }
         }
@@ -531,19 +493,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handleAreaTap(x: Float, y: Float) {
         overlayAreaPoints.add(PointF(x, y))
-        binding.overlayView.animateNewPoint() // #23: pop-in animation for new point
+        binding.overlayView.animateNewPoint()
         if (overlayAreaPoints.size >= 3) {
             val area = computeArea(overlayAreaPoints, depthCache)
             measuredResult = if (area > 0) formatArea(area) else "无法计算"
             binding.tvDistance.text = measuredResult
             if (area > 0) saveToHistory(measuredResult, "面积")
-        }
-        else binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
+        } else binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
         val lines = mutableListOf<Pair<PointF, PointF>>()
         for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i+1]))
         if (overlayAreaPoints.size >= 3) lines.add(Pair(overlayAreaPoints.last(), overlayAreaPoints.first()))
         binding.overlayView.lines = lines; binding.overlayView.showLineLabels = false
         binding.overlayView.points = overlayAreaPoints.toList(); binding.overlayView.areaPoints = overlayAreaPoints.toList(); binding.overlayView.invalidate()
+        if (overlayAreaPoints.size >= 3) { binding.progressBar.visibility = android.view.View.GONE; hapticComplete() }
     }
 
     private fun updateOverlay() {
@@ -554,10 +516,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun computeArea(pts: List<PointF>, depthsCache: MutableMap<Int, Float>? = null): Float {
         if (pts.size < 3) return 0f
-        // #1: Use cached surface dimensions for thread safety
         val vw = cachedViewWidth; val vh = cachedViewHeight
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
-            // #2: Synchronized depth cache access
             val depths = synchronized(depthCacheLock) {
                 pts.indices.map { i ->
                     depthsCache?.get(i) ?: run {
@@ -570,31 +530,26 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val pts3d = pts.zip(depths).map { (p, d) ->
                     if (intrinsics != null && intrinsics.size >= 4) {
-                        // Intrinsic projection: more accurate
                         val arr = cameraCtrl.rgbSensorActiveArray
-                        val imgW = arr?.width() ?: vw.toInt()
-                        val imgH = arr?.height() ?: vh.toInt()
+                        val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
                         val ix = p.x / vw * imgW; val iy = p.y / vh * imgH
-                        val px = d!! * (ix - intrinsics[2]) / intrinsics[0]
-                        val py = d * (iy - intrinsics[3]) / intrinsics[1]
-                        Triple(px, py, d)
+                        Triple(d!! * (ix - intrinsics[2]) / intrinsics[0], d * (iy - intrinsics[3]) / intrinsics[1], d)
                     } else {
-                        // FOV fallback with tan clamp
-                        val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
                         val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
-                        val px = d!! * Math.tan(nx.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getHfovDegrees()) / 2).toFloat()
-                        val py = d * Math.tan(ny.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getVfovDegrees()) / 2).toFloat()
-                        Triple(px, py, d)
+                        val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
+                        Triple(d!! * Math.tan(nx.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getHfovDegrees()) / 2).toFloat(),
+                               d * Math.tan(ny.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getVfovDegrees()) / 2).toFloat(), d)
                     }
                 }
                 return MeasurementEngine.computePolygonArea3D(pts3d)
             }
         }
-        val cx = pts.map{it.x}.average().toFloat()
-        val cy = pts.map{it.y}.average().toFloat()
+        val cx = pts.map{it.x}.average().toFloat(); val cy = pts.map{it.y}.average().toFloat()
         val avg = getDistanceAt(cx, cy) ?: return 0f
         return MeasurementEngine.computeFlatArea(pts.map{it.x}.toFloatArray(), pts.map{it.y}.toFloatArray(), avg, vw, getHfovDegrees(), vh, getVfovDegrees())
     }
+
+    // ── UI Setup ─────────────────────────────────────────────
 
     private fun setupUI() {
         binding.tvSensor.text = "${if (tofHelper.hasRealTof) "ToF" else "AF"} ${tofHelper.sensorLabel}" + if (imuHelper.isAvailable()) " +IMU" else ""
@@ -604,7 +559,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.btnSweepMode.setOnClickListener { setMode(Mode.SWEEP) }
         binding.btnDepthToggle.setOnClickListener { toggleDepthCamera() }
         binding.btnUndo.setOnClickListener { undoLastPoint() }
-        // #6: Pinch zoom
         binding.overlayView.onScale = { sf ->
             val sv = binding.surfaceView; val ns = (sv.scaleX * sf).coerceIn(0.5f, 5f)
             sv.scaleX = ns; sv.scaleY = ns; sv.pivotX = sv.width / 2f; sv.pivotY = sv.height / 2f
@@ -621,92 +575,94 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun setMode(mode: Mode) {
         currentMode = mode; calibrating = false
         binding.tvMode.text = when (mode) {
-            Mode.POINT -> "点击测距"
-            Mode.LINE -> "两点测距"
-            Mode.AREA -> "面积测量"
-            Mode.SWEEP -> "扫掠测距"
+            Mode.POINT -> "点击测距"; Mode.LINE -> "两点测距"; Mode.AREA -> "面积测量"; Mode.SWEEP -> "扫掠测距"
         }
         binding.overlayView.sweepMode = (mode == Mode.SWEEP)
         val allBtns = listOf(binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode)
-        allBtns.forEach { it.setBackgroundColor(0x00000000); it.setTextColor(Color.parseColor("#AAAAAA")) }
+        allBtns.forEach { it.setBackgroundColor(0x00000000); it.setTextColor(android.graphics.Color.parseColor("#AAAAAA")) }
         val active = when (mode) {
-            Mode.POINT -> binding.btnPointMode
-            Mode.LINE -> binding.btnLineMode
-            Mode.AREA -> binding.btnAreaMode
-            Mode.SWEEP -> binding.btnSweepMode
+            Mode.POINT -> binding.btnPointMode; Mode.LINE -> binding.btnLineMode
+            Mode.AREA -> binding.btnAreaMode; Mode.SWEEP -> binding.btnSweepMode
         }
-        // #22: Animate mode transition
-        active.setBackgroundColor(Color.parseColor("#33FFFFFF"))
-        active.setTextColor(Color.WHITE)
+        active.setBackgroundColor(android.graphics.Color.parseColor("#33FFFFFF"))
+        active.setTextColor(android.graphics.Color.WHITE)
     }
 
     private fun resetMeasurement() {
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
-        // #2: Synchronized cache clear
         synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
         measuredResult = "--"; binding.tvDistance.text = "--"
-        binding.overlayView.points = emptyList()
-        binding.overlayView.lines = emptyList()
-        binding.overlayView.areaPoints = emptyList()
-        binding.overlayView.showLineLabels = false
-        binding.overlayView.sweepDistanceCm = -1f
-        binding.overlayView.sweepHistory = emptyList()
-        binding.overlayView.lineDistanceLabels = emptyList()
-        binding.overlayView.placingSecondPoint = false
+        binding.progressBar.visibility = android.view.View.GONE
+        binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList()
+        binding.overlayView.areaPoints = emptyList(); binding.overlayView.showLineLabels = false
+        binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
+        binding.overlayView.lineDistanceLabels = emptyList(); binding.overlayView.placingSecondPoint = false
         binding.overlayView.liveCrosshair = null
-        // Reset filter states so next measurement starts fresh (not from old Kalman/ToF momentum)
-        depthFilter.reset()
-        tofHelper.reset()
+        depthFilter.reset(); tofHelper.reset()
         if (imuHelper.isAvailable()) imuHelper.reset()
-        currentFocusDistance = -1f
-        depthBuffer = null
+        currentFocusDistance = -1f; depthBuffer = null
+        synchronized(temporalLock) { temporalFrames.clear() }
         updateCalibrationUI()
         binding.overlayView.postInvalidate()
     }
 
+    // ── Save & Share ─────────────────────────────────────────
+
     private fun saveMeasurement() {
         if (measuredResult == "--" || measuredResult.contains("无")) {
-            Toast.makeText(this, "请先进行测量", Toast.LENGTH_SHORT).show()
-            return
+            Toast.makeText(this, "请先进行测量", Toast.LENGTH_SHORT).show(); return
         }
         try {
             val sv = binding.surfaceView; val bitmap = Bitmap.createBitmap(sv.width, sv.height, Bitmap.Config.ARGB_8888)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val loc = IntArray(2); sv.getLocationInWindow(loc)
                 android.view.PixelCopy.request(window, Rect(loc[0], loc[1], loc[0]+sv.width, loc[1]+sv.height), bitmap,
-                    { r -> if (r == android.view.PixelCopy.SUCCESS) { val c = Canvas(bitmap); binding.overlayView.draw(c); saveBitmapToGallery(bitmap) } }, Handler(mainLooper)) }
-            else {
-                val c = Canvas(bitmap); c.drawColor(Color.BLACK); binding.overlayView.draw(c)
-                saveBitmapToGallery(bitmap)
-            }
-        } catch (e: Exception) { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+                    { r ->
+                        if (r == android.view.PixelCopy.SUCCESS) { val c = Canvas(bitmap); binding.overlayView.draw(c); saveBitmapToGallery(bitmap) }
+                        else { saveBitmapFallback() }
+                    }, Handler(mainLooper))
+            } else { saveBitmapFallback() }
+        } catch (e: Exception) { saveBitmapFallback() }
+    }
+
+    private fun saveBitmapFallback() {
+        // Fallback: draw SurfaceView + overlay into a bitmap
+        try {
+            val sv = binding.surfaceView
+            val bitmap = Bitmap.createBitmap(sv.width.coerceAtLeast(1), sv.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+            val c = Canvas(bitmap); c.drawColor(Color.BLACK)
+            binding.overlayView.draw(c)
+            saveBitmapToGallery(bitmap)
+        } catch (e: Exception) {
+            runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+        }
     }
 
     private fun saveBitmapToGallery(bitmap: Bitmap) {
         try {
             val displayName = "ARMeasure_${System.currentTimeMillis()}"
-            val mimeType = "image/png"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = android.content.ContentValues().apply {
                     put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, displayName)
-                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, mimeType)
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
                     put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/ARMeasure")
                     put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
                 }
                 val uri = contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                 if (uri != null) {
-                    contentResolver.openOutputStream(uri)?.use { os ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
-                    }
-                    values.clear()
-                    values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.openOutputStream(uri)?.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    values.clear(); values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
                     contentResolver.update(uri, values, null, null)
+                    // Share intent
+                    runOnUiThread {
+                        Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
+                        showShareOption(uri)
+                    }
                 }
-                runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() }
             } else {
                 @Suppress("DEPRECATION")
-                android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, displayName, "Distance: $measuredResult")
+                val path = android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, displayName, "Distance: $measuredResult")
                 runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() }
             }
         } catch (e: Exception) {
@@ -714,11 +670,28 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         }
     }
 
+    private fun showShareOption(uri: android.net.Uri) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("分享测量结果？")
+            .setPositiveButton("分享") { _, _ ->
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_TEXT, "AR测距结果: $measuredResult")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(intent, "分享测量结果"))
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    // ── Undo ─────────────────────────────────────────────────
+
     private fun undoLastPoint() {
         val now = System.currentTimeMillis()
         if (now - lastUndoClickTime < AppConstants.MODE_DEBOUNCE_MS) return
         lastUndoClickTime = now
-        // #7: Fade-out animation
         binding.overlayView.animateFadeOut { this.undoLastPointImpl() }
     }
     private fun undoLastPointImpl() {
@@ -744,59 +717,42 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> {
-                firstPoint = null
-                firstUncertainty = 0f
-                overlayPoints.clear()
-                binding.tvDistance.text = "--"
-                updateOverlay()
-            }
+            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; updateOverlay() }
             else -> resetMeasurement()
         }
     }
 
-    private var lastRawCm: Float = -1f  // store last raw cm value for unit re-display
+    private var lastRawCm: Float = -1f
 
     private fun cycleUnit() {
         currentUnit = when (currentUnit) { MeasureUnit.CM -> MeasureUnit.INCH; MeasureUnit.INCH -> MeasureUnit.M; MeasureUnit.M -> MeasureUnit.CM }
         val label = when (currentUnit) { MeasureUnit.CM -> "厘米"; MeasureUnit.INCH -> "英寸"; MeasureUnit.M -> "米" }
         Toast.makeText(this, "单位: $label", Toast.LENGTH_SHORT).show()
-        if (lastRawCm > 0 && currentMode == Mode.POINT) {
-            measuredResult = formatDistance(lastRawCm)
-            binding.tvDistance.text = measuredResult
-        }
+        if (lastRawCm > 0 && currentMode == Mode.POINT) { measuredResult = formatDistance(lastRawCm); binding.tvDistance.text = measuredResult }
     }
 
     // ── Calibration ──────────────────────────────────────────
 
     private fun startCalibration() {
         if (calibrating) { calibrating = false; updateCalibrationUI(); return }
-        calibrating = true
-        binding.tvDistance.text = "对准目标后点击屏幕"
-        binding.tvMode.text = "校准模式"
+        calibrating = true; binding.tvDistance.text = "对准目标后点击屏幕"; binding.tvMode.text = "校准模式"
         updateCalibrationUI()
     }
 
     private fun performCalibration(sx: Float, sy: Float) {
         backgroundHandler?.post {
-            // Multi-sample averaging for more stable calibration
             val samples = mutableListOf<Float>()
             for (i in 0 until AppConstants.CALIBRATION_SAMPLE_COUNT) {
                 val d = getDistanceAt(sx, sy)
                 if (d != null && d > 0) samples.add(d)
                 Thread.sleep(AppConstants.CALIBRATION_SAMPLE_INTERVAL_MS)
             }
-            val measured = if (samples.isNotEmpty()) samples.sorted()[samples.size / 2] else null  // median
+            val measured = if (samples.isNotEmpty()) samples.sorted()[samples.size / 2] else null
             runOnUiThread {
-                if (measured == null || measured <= 0) {
-                    Toast.makeText(this, "无法获取距离，请重试", Toast.LENGTH_SHORT).show()
-                    return@runOnUiThread
-                }
-                // Ask user for known distance
+                if (measured == null || measured <= 0) { Toast.makeText(this, "无法获取距离，请重试", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
                 val input = android.widget.EditText(this).apply {
                     inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-                    hint = "已知距离 (cm)"
-                    setText(String.format("%.0f", measured))
+                    hint = "已知距离 (cm)"; setText(String.format("%.0f", measured))
                 }
                 android.app.AlertDialog.Builder(this)
                     .setTitle("校准: 当前测量 ${String.format("%.1f cm", measured)}")
@@ -805,20 +761,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     .setPositiveButton("校准") { _, _ ->
                         val known = input.text.toString().toFloatOrNull()
                         if (known != null && known > 0) {
-                            calibrationFactor = known / measured
-                            isCalibrated = true
-                            calibrating = false
-                            saveCalibration()
-                            updateCalibrationUI()
-                            setMode(currentMode) // restore mode display
+                            calibrationFactor = known / measured; isCalibrated = true; calibrating = false
+                            saveCalibration(); updateCalibrationUI(); setMode(currentMode)
                             Toast.makeText(this, "校准完成 (x${String.format("%.3f", calibrationFactor)})", Toast.LENGTH_SHORT).show()
                         }
                     }
-                    .setNegativeButton("取消") { _, _ ->
-                        calibrating = false
-                        updateCalibrationUI()
-                        setMode(currentMode)
-                    }
+                    .setNegativeButton("取消") { _, _ -> calibrating = false; updateCalibrationUI(); setMode(currentMode) }
                     .show()
             }
         }
@@ -826,25 +774,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun loadCalibration() {
         val prefs = getSharedPreferences("armeasure_cal", MODE_PRIVATE)
-        calibrationFactor = prefs.getFloat("factor", 1.0f)
-        isCalibrated = prefs.getBoolean("calibrated", false)
+        calibrationFactor = prefs.getFloat("factor", 1.0f); isCalibrated = prefs.getBoolean("calibrated", false)
         updateCalibrationUI()
     }
-
     private fun saveCalibration() {
         getSharedPreferences("armeasure_cal", MODE_PRIVATE).edit()
-            .putFloat("factor", calibrationFactor)
-            .putBoolean("calibrated", isCalibrated)
-            .apply()
+            .putFloat("factor", calibrationFactor).putBoolean("calibrated", isCalibrated).apply()
     }
-
     private fun updateCalibrationUI() {
         if (isCalibrated) {
             binding.tvCalibration.text = "x${String.format("%.3f", calibrationFactor)}"
-            binding.tvCalibration.setTextColor(Color.parseColor("#00FF88"))
-        } else {
-            binding.tvCalibration.text = ""
-        }
+            binding.tvCalibration.setTextColor(android.graphics.Color.parseColor("#00FF88"))
+        } else { binding.tvCalibration.text = "" }
         binding.btnCalibrate.setBackgroundColor(if (calibrating) 0x33FFCC00.toInt() else 0x00000000)
     }
 
@@ -858,80 +799,53 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (measurementHistory.size > 50) measurementHistory.removeAt(measurementHistory.size - 1)
         persistHistory()
     }
-
     private fun persistHistory() {
-        val json = jsonArrayOf(measurementHistory.map {
-            jsonObjectOf("t" to it.timestamp, "m" to it.mode, "r" to it.result, "u" to it.unit)
-        })
+        val json = jsonArrayOf(measurementHistory.map { jsonObjectOf("t" to it.timestamp, "m" to it.mode, "r" to it.result, "u" to it.unit) })
         historyPrefs.edit().putString("data", json.toString()).apply()
     }
-
     private fun loadHistory() {
         try {
-            val raw = historyPrefs.getString("data", "[]") ?: "[]"
-            val arr = org.json.JSONArray(raw)
+            val raw = historyPrefs.getString("data", "[]") ?: "[]"; val arr = org.json.JSONArray(raw)
             measurementHistory.clear()
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                measurementHistory.add(HistoryEntry(o.getLong("t"), o.getString("m"), o.getString("r"), o.getString("u")))
-            }
+            for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); measurementHistory.add(HistoryEntry(o.getLong("t"), o.getString("m"), o.getString("r"), o.getString("u"))) }
         } catch (_: Exception) { measurementHistory.clear() }
     }
-
     private fun showHistory() {
-        if (measurementHistory.isEmpty()) {
-            Toast.makeText(this, "暂无测量记录", Toast.LENGTH_SHORT).show()
-            return
-        }
+        if (measurementHistory.isEmpty()) { Toast.makeText(this, "暂无测量记录", Toast.LENGTH_SHORT).show(); return }
         val items = measurementHistory.map { e ->
             val time = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(e.timestamp))
             "$time  [${e.mode}]  ${e.result}"
         }.toTypedArray()
         android.app.AlertDialog.Builder(this)
-            .setTitle("测量记录 (${measurementHistory.size})")
-            .setItems(items, null)
-            .setNeutralButton("清空") { _, _ ->
-                measurementHistory.clear(); persistHistory()
-                Toast.makeText(this, "已清空", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("关闭", null)
-            .show()
+            .setTitle("测量记录 (${measurementHistory.size})").setItems(items, null)
+            .setNeutralButton("清空") { _, _ -> measurementHistory.clear(); persistHistory(); Toast.makeText(this, "已清空", Toast.LENGTH_SHORT).show() }
+            .setNegativeButton("关闭", null).show()
     }
 
-    // ── Helpers for JSON ─────────────────────────────────────
+    // ── JSON helpers ─────────────────────────────────────────
 
     private fun jsonObjectOf(vararg pairs: Pair<String, Any>): org.json.JSONObject {
-        val obj = org.json.JSONObject()
-        for ((k, v) in pairs) obj.put(k, v)
-        return obj
+        val obj = org.json.JSONObject(); for ((k, v) in pairs) obj.put(k, v); return obj
+    }
+    private fun jsonArrayOf(items: List<org.json.JSONObject>): org.json.JSONArray {
+        val arr = org.json.JSONArray(); items.forEach { arr.put(it) }; return arr
     }
 
-    private fun jsonArrayOf(items: List<org.json.JSONObject>): org.json.JSONArray {
-        val arr = org.json.JSONArray()
-        items.forEach { arr.put(it) }
-        return arr
-    }
+    // ── Surface Callbacks ────────────────────────────────────
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (cameraCtrl.cameraDevice == null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
-        // Only set up preview if camera is open BUT no capture session yet
-        // (camera opened before surface was ready). Skip if session already exists
-        // to avoid destroying/recreating it (which causes preview flicker).
         else if (cameraCtrl.cameraDevice != null && cameraCtrl.captureSession == null) {
             cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, cameraCtrl.depthCameraEnabled && cameraCtrl.depthStreamActive)
         }
-        // #1: Cache surface dimensions for thread-safe access from BG handler
-        holder.surface?.let {
-            cachedViewWidth = binding.surfaceView.width.toFloat()
-            cachedViewHeight = binding.surfaceView.height.toFloat()
-        }
+        cachedViewWidth = binding.surfaceView.width.toFloat(); cachedViewHeight = binding.surfaceView.height.toFloat()
     }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        // #1: Update cached dimensions on surface resize
-        cachedViewWidth = width.toFloat()
-        cachedViewHeight = height.toFloat()
+        cachedViewWidth = width.toFloat(); cachedViewHeight = height.toFloat()
     }
     override fun surfaceDestroyed(holder: SurfaceHolder) {}
+
+    // ── Depth Processing Pipeline ────────────────────────────
 
     private var depthBufReusable: ShortArray? = null
 
@@ -949,12 +863,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                         if (bi + 1 < buffer.capacity()) buf[row * w + col] = buffer.getShort(bi)
                     }
                 }
+                // Temporal smoothing: keep last N frames
+                synchronized(temporalLock) {
+                    temporalFrames.addLast(buf.copyOf())
+                    while (temporalFrames.size > AppConstants.TEMPORAL_FRAME_COUNT) temporalFrames.removeFirst()
+                }
                 depthBuffer = buf; depthWidth = w; depthHeight = h
             }
         } catch (e: Exception) { Log.e(TAG, "depth err", e) } finally { image.close() }
     }
 
-    // #1: Thread-safe — uses cached dimensions, never reads View properties
+    /**
+     * Multi-frame temporal median at pixel level + spatial kernel + boundary detection.
+     */
     private fun getDepthAtScreenPoint(sx: Float, sy: Float, filter: DistanceFilter = depthFilter): Float? {
         synchronized(depthLock) {
             val buf = depthBuffer ?: return null
@@ -964,7 +885,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val dx: Int; val dy: Int
             val sep = cameraCtrl.depthCameraDevice?.id != cameraCtrl.cameraDevice?.id
             if (sep && cameraCtrl.depthSensorActiveArray != null && cameraCtrl.rgbSensorActiveArray != null) {
-                val rgb = cameraCtrl.rgbSensorActiveArray!!; val dep = cameraCtrl.depthSensorActiveArray!!
+                val dep = cameraCtrl.depthSensorActiveArray!!
                 dx = (sx / vw * dep.width()).toInt().coerceIn(0, depthWidth - 1)
                 dy = (sy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
             } else {
@@ -972,48 +893,61 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1)
             }
 
-            // #5: Adaptive neighborhood — depth-aware kernel size
-            // Near (<1m): 3×3 to avoid contamination from neighboring objects
-            // Mid (1-3m): 5×5 for noise averaging
-            // Far (>3m): 7×7 for heavy noise
-            // Also adapt by resolution: low-res depth maps use smaller kernel
-            val radius = when {
-                depthWidth <= 240 || depthHeight <= 180 -> AppConstants.NEIGHBORHOOD_RADIUS_NEAR  // always 3×3 for low-res
-                else -> AppConstants.NEIGHBORHOOD_RADIUS_MID  // 5×5 default
+            // Temporal median: center pixel across N frames
+            val centerRaw = synchronized(temporalLock) {
+                if (temporalFrames.size >= 2) {
+                    val vals = temporalFrames.mapNotNull { f ->
+                        if (f.size == depthWidth * depthHeight) {
+                            val v = f[dy * depthWidth + dx].toInt() and 0xFFFF
+                            if (v in 1..65533) v.toFloat() else null
+                        } else null
+                    }
+                    if (vals.size >= 2) { vals.sort(); vals[vals.size / 2] } // median
+                    else buf[dy * depthWidth + dx].toInt() and 0xFFFF.toFloat()
+                } else buf[dy * depthWidth + dx].toInt() and 0xFFFF.toFloat()
             }
 
-            // First pass: quick center depth estimate for adaptive kernel
-            val centerRaw = buf[dy * depthWidth + dx].toInt() and 0xFFFF
-            val centerCm = if (centerRaw in 1..65533) centerRaw / 10f else 0f
-            val adaptRadius = when {
+            // Adaptive kernel size
+            val centerCm = if (centerRaw > 0 && centerRaw <= 65533) centerRaw / 10f else 0f
+            val radius = when {
+                depthWidth <= 240 || depthHeight <= 180 -> AppConstants.NEIGHBORHOOD_RADIUS_NEAR
                 centerCm > 0 && centerCm < AppConstants.NEIGHBORHOOD_NEAR_CM -> AppConstants.NEIGHBORHOOD_RADIUS_NEAR
                 centerCm >= AppConstants.NEIGHBORHOOD_FAR_CM -> AppConstants.NEIGHBORHOOD_RADIUS_FAR
-                else -> radius  // use resolution-based default (NEIGHBORHOOD_RADIUS_MID)
+                else -> AppConstants.NEIGHBORHOOD_RADIUS_MID
             }
 
             var wSum = 0.0; var wtSum = 0.0; var cnt = 0
-            for (ddy in -adaptRadius..adaptRadius) for (ddx in -adaptRadius..adaptRadius) {
+            var neighborMin = Float.MAX_VALUE; var neighborMax = 0f
+            for (ddy in -radius..radius) for (ddx in -radius..radius) {
                 val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
                 val raw = buf[py*depthWidth+px].toInt() and 0xFFFF
                 if (raw in 1..65533) {
                     val d2 = (ddx * ddx + ddy * ddy).toFloat()
                     val w = 1f / (1f + d2)
-                    wSum += raw * w
-                    wtSum += w
-                    cnt++
+                    wSum += raw * w; wtSum += w; cnt++
+                    val rf = raw.toFloat()
+                    if (rf < neighborMin) neighborMin = rf
+                    if (rf > neighborMax) neighborMax = rf
                 }
             }
             if (cnt < 3) return null
+
+            // Boundary detection: large neighbor variance → object edge
+            val neighborVariance = neighborMax - neighborMin
+            val edgeConfidence = if (neighborVariance > AppConstants.DEPTH_EDGE_VARIANCE_THRESHOLD) {
+                (1f - (neighborVariance - AppConstants.DEPTH_EDGE_VARIANCE_THRESHOLD) / AppConstants.DEPTH_EDGE_VARIANCE_THRESHOLD)
+                    .coerceAtLeast(AppConstants.DEPTH_EDGE_CONFIDENCE_MIN)
+            } else 1f
+
             val filtered = filter.filter((wSum / wtSum).toFloat())
+            // At object edges, reduce confidence (return null to trigger ToF/AF fallback)
+            if (edgeConfidence < 0.5f && tofHelper.hasRealTof) return null
             return if (filtered > 0) filtered / 10f else null
         }
     }
 
     private fun startBackgroundThread() {
-        if (backgroundThread?.isAlive == true) {
-            backgroundThread?.quitSafely()
-            try { backgroundThread?.join(1000) } catch (_: Exception) {}
-        }
+        if (backgroundThread?.isAlive == true) { backgroundThread?.quitSafely(); try { backgroundThread?.join(1000) } catch (_: Exception) {} }
         backgroundThread = HandlerThread("CameraBG").also { it.start() }; backgroundHandler = Handler(backgroundThread!!.looper)
     }
     private fun stopBackgroundThread() {

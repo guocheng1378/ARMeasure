@@ -58,18 +58,37 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/tvDistance"
+        <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="--"
-            android:textColor="#00FF88"
-            android:textSize="36sp"
-            android:textStyle="bold"
-            android:fontFamily="monospace"
-            android:gravity="center"
             android:paddingTop="4dp"
-            android:paddingBottom="4dp" />
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/tvDistance"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="--"
+                android:textColor="#00FF88"
+                android:textSize="36sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                app:autoSizeTextType="uniform"
+                app:autoSizeMinTextSize="18sp"
+                app:autoSizeMaxTextSize="36sp"
+                app:autoSizeStepGranularity="2sp" />
+
+            <ProgressBar
+                android:id="@+id/progressBar"
+                style="?android:attr/progressBarStyleSmall"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_gravity="end|center_vertical"
+                android:layout_marginEnd="16dp"
+                android:indeterminateTint="#00FF88"
+                android:visibility="gone" />
+        </FrameLayout>
     </LinearLayout>
 
     <LinearLayout
@@ -96,7 +115,10 @@
                 android:layout_weight="1"
                 android:layout_marginEnd="4dp"
                 android:text="单点"
-                android:textSize="12sp" />
+                android:textSize="12sp"
+                app:icon="@android:drawable/ic_menu_mylocation"
+                app:iconGravity="top"
+                app:iconSize="18dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnLineMode"
@@ -106,7 +128,10 @@
                 android:layout_weight="1"
                 android:layout_marginHorizontal="4dp"
                 android:text="两点"
-                android:textSize="12sp" />
+                android:textSize="12sp"
+                app:icon="@android:drawable/ic_menu_edit"
+                app:iconGravity="top"
+                app:iconSize="18dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnAreaMode"
@@ -116,7 +141,10 @@
                 android:layout_weight="1"
                 android:layout_marginHorizontal="4dp"
                 android:text="面积"
-                android:textSize="12sp" />
+                android:textSize="12sp"
+                app:icon="@android:drawable/ic_menu_crop"
+                app:iconGravity="top"
+                app:iconSize="18dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSweepMode"
@@ -126,7 +154,10 @@
                 android:layout_weight="1"
                 android:layout_marginStart="4dp"
                 android:text="扫掠"
-                android:textSize="12sp" />
+                android:textSize="12sp"
+                app:icon="@android:drawable/ic_menu_rotate"
+                app:iconGravity="top"
+                app:iconSize="18dp" />
         </LinearLayout>
 
         <LinearLayout

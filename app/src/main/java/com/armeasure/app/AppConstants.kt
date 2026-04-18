@@ -14,6 +14,11 @@ object AppConstants {
     const val DEPTH_SAMPLE_COUNT = 5
     const val DEPTH_SAMPLE_INTERVAL_MS = 80L
 
+    // ── Depth temporal smoothing (multi-frame median) ──
+    const val TEMPORAL_FRAME_COUNT = 3    // keep last N depth frames for median
+    const val DEPTH_EDGE_VARIANCE_THRESHOLD = 800f  // mm² — neighbor variance at depth edges
+    const val DEPTH_EDGE_CONFIDENCE_MIN = 0.3f      // min confidence at object boundaries
+
     // ── Depth fusion variances (cm²) ──
     const val TOF_VARIANCE = 25f           // 5cm σ
     const val DEPTH16_VARIANCE_CLOSE = 64f // <1m
@@ -63,4 +68,18 @@ object AppConstants {
 
     // ── IMU velocity integration ──
     const val VELOCITY_DT_MAX = 0.1        // max dt in seconds for velocity integration
+
+    // ── Sweep ──
+    const val SWEEP_RULER_COUNT = 5        // number of Y-axis ruler labels
+    const val SWEEP_GRID_ALPHA = 25        // alpha for grid lines
+
+    // ── Haptic ──
+    const val HAPTIC_TAP_MS = 20L
+    const val HAPTIC_COMPLETE_MS = 15L     // double pulse
+    const val HAPTIC_COMPLETE_GAP_MS = 80L
+    const val HAPTIC_WARNING_MS = 50L
+
+    // ── Tutorial ──
+    const val TUTORIAL_PREF = "armeasure_tutorial"
+    const val TUTORIAL_SHOWN_KEY = "shown"
 }

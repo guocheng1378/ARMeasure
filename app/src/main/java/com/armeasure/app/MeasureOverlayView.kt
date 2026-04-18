@@ -25,6 +25,7 @@ class MeasureOverlayView @JvmOverloads constructor(
     var placingSecondPoint: Boolean = false
     var liveCrosshair: PointF? = null
     var surfaceDetected: Boolean = false
+    var showTutorial: Boolean = false
 
     var onTap: ((Float, Float) -> Unit)? = null
     var onMove: ((Float, Float) -> Unit)? = null
@@ -67,7 +68,6 @@ class MeasureOverlayView @JvmOverloads constructor(
     private val crossActiveP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2f
     }
-    // #17: Use green color for placement cross to differentiate from the selected point
     private val placeCrossP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#00FF88"); style = Paint.Style.STROKE; strokeWidth = 1.5f
     }
@@ -84,12 +84,49 @@ class MeasureOverlayView @JvmOverloads constructor(
     private val sweepTxtBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#DD000000"); style = Paint.Style.FILL }
     private val sweepTrailP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#66FFCC00"); style = Paint.Style.STROKE; strokeWidth = 3f }
     private val sweepDotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FFCC00"); style = Paint.Style.FILL }
+    // Sweep ruler/grid
+    private val sweepGridP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(AppConstants.SWEEP_GRID_ALPHA, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = 0.5f
+        pathEffect = DashPathEffect(floatArrayOf(6f, 6f), 0f)
+    }
+    private val sweepRulerTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#80FFFFFF"); textSize = 18f; typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+        textAlign = Paint.Align.RIGHT
+    }
+    // Tap ripple
+    private var rippleRadius = 0f; private var rippleAlpha = 0; private var rippleCenter: PointF? = null
+    private val rippleP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#40FFFFFF"); style = Paint.Style.FILL
+    }
+    private val rippleAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 300; interpolator = DecelerateInterpolator(2f)
+        addUpdateListener {
+            val f = it.animatedFraction
+            rippleRadius = 5f + f * 40f
+            rippleAlpha = ((1f - f) * 60).toInt()
+            invalidate()
+        }
+    }
+    // Tutorial
+    private val tutorialBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#CC000000"); style = Paint.Style.FILL }
+    private val tutorialTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textSize = 32f; textAlign = Paint.Align.CENTER
+    }
+    private val tutorialSubTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#AAAAAA"); textSize = 22f; textAlign = Paint.Align.CENTER
+    }
+    private val tutorialHandP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00FF88"); style = Paint.Style.STROKE; strokeWidth = 3f
+    }
+    private val tutorialDotP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00FF88"); style = Paint.Style.FILL
+    }
 
     private val rRect = Rect()
     private val rPath = Path()
     private val arrowPath = Path()
 
-    // ── Line expand animation (#18: add isRunning guard) ──
+    // Line expand animation
     var lineExpandProgress = 1f
     private val lineExpandAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 350; interpolator = DecelerateInterpolator(2.5f)
@@ -101,7 +138,7 @@ class MeasureOverlayView @JvmOverloads constructor(
         lineExpandAnimator.start()
     }
 
-    // ── Fade out animation (#19: cancel before start) ──
+    // Fade out animation
     var fadeOutAlpha = 1f
     private val fadeOutAnimator = ValueAnimator.ofFloat(1f, 0f).apply {
         duration = 200; interpolator = AccelerateInterpolator(2f)
@@ -116,7 +153,7 @@ class MeasureOverlayView @JvmOverloads constructor(
         fadeOutAnimator.start()
     }
 
-    // ── Pulse animation (#20: clear pulseCenter on end) ──
+    // Pulse animation
     private var pulseRadius = 0f; private var pulseAlpha = 0; private var pulseCenter: PointF? = null
     private val pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 500; interpolator = DecelerateInterpolator(2f)
@@ -137,14 +174,7 @@ class MeasureOverlayView @JvmOverloads constructor(
         pulseAnimator.start()
     }
 
-    // ── Mode transition animation (#22) ──
-    private var activeButtonAlpha = 1f
-    private val modeTransitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 150; interpolator = DecelerateInterpolator(2f)
-        addUpdateListener { activeButtonAlpha = it.animatedValue as Float; invalidate() }
-    }
-
-    // ── Area point pop-in animation (#23) ──
+    // Point pop-in animation
     private var newPointScale = 1f
     private val pointPopAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 200; interpolator = DecelerateInterpolator(2.5f)
@@ -155,12 +185,26 @@ class MeasureOverlayView @JvmOverloads constructor(
         pointPopAnimator.start()
     }
 
+    // Tap ripple
+    fun triggerRipple(x: Float, y: Float) {
+        if (rippleAnimator.isRunning) rippleAnimator.cancel()
+        rippleCenter = PointF(x, y)
+        rippleAnimator.removeAllListeners()
+        rippleAnimator.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(a: android.animation.Animator) { rippleCenter = null }
+        })
+        rippleAnimator.start()
+    }
+
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean { onScale?.invoke(d.scaleFactor); return true }
     })
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+
+        // Tutorial overlay
+        if (showTutorial) { drawTutorial(canvas); return }
         if (sweepMode) { drawSweep(canvas); return }
 
         if (areaPoints.size >= 2) {
@@ -198,31 +242,25 @@ class MeasureOverlayView @JvmOverloads constructor(
             }
         }
 
-        // Draw points with pop-in animation for the last area point (#23)
+        // Draw points with pop-in animation
         for (i in points.indices) {
             val p = points[i]
             val isLast = i == points.size - 1 && pointPopAnimator.isRunning
-            if (isLast) {
-                canvas.save()
-                canvas.scale(newPointScale, newPointScale, p.x, p.y)
-            }
+            if (isLast) { canvas.save(); canvas.scale(newPointScale, newPointScale, p.x, p.y) }
             canvas.drawCircle(p.x, p.y, 4f, dotP); canvas.drawCircle(p.x, p.y, 10f, dotRingP)
             if (isLast) canvas.restore()
         }
         for (i in areaPoints.indices) {
             val p = areaPoints[i]
             val isLast = i == areaPoints.size - 1 && pointPopAnimator.isRunning
-            if (isLast) {
-                canvas.save()
-                canvas.scale(newPointScale, newPointScale, p.x, p.y)
-            }
+            if (isLast) { canvas.save(); canvas.scale(newPointScale, newPointScale, p.x, p.y) }
             canvas.drawCircle(p.x, p.y, 4f, dotP); canvas.drawCircle(p.x, p.y, 10f, dotRingP)
             if (isLast) canvas.restore()
         }
 
         pulseCenter?.let { pc -> if (pulseAnimator.isRunning) { pulseRingP.alpha = pulseAlpha; canvas.drawCircle(pc.x, pc.y, pulseRadius, pulseRingP) } }
+        rippleCenter?.let { rc -> if (rippleAnimator.isRunning) { rippleP.alpha = rippleAlpha; canvas.drawCircle(rc.x, rc.y, rippleRadius, rippleP) } }
 
-        // #16: Only draw crosshair when surfaceDetected (hide default crosshair otherwise)
         if (surfaceDetected) {
             val cx = width / 2f; val cy = height / 2f
             val cs = AppConstants.CROSSHAIR_SIZE
@@ -261,39 +299,47 @@ class MeasureOverlayView @JvmOverloads constructor(
 
     private var sweepTextCached: String = ""
     private var sweepTextBounds: Rect = Rect()
-
-    // #Lint: Pre-allocated string to avoid allocations in onDraw()
     fun updateSweepText(text: String) {
         sweepTextCached = text
         sweepTxtP.getTextBounds(text, 0, text.length, sweepTextBounds)
     }
 
-    // #21: Sweep trail with quadratic Bezier smoothing
+    // Sweep with Bezier smoothing + ruler/grid
     private fun drawSweep(c: Canvas) {
         val cx = width/2f; val cy = height/2f
+        val cBot = height - 60f; val cTop = height - 200f
+
         if (sweepHistory.size >= 2) {
             rPath.reset()
-            val cBot = height - 60f; val cTop = height - 200f
             val maxD = sweepHistory.maxOfOrNull { it.second } ?: 200f
             val minD = sweepHistory.minOfOrNull { it.second } ?: 0f
             val range = (maxD - minD).coerceAtLeast(50f)
 
+            // Ruler/grid lines
+            val rulerCount = AppConstants.SWEEP_RULER_COUNT
+            for (i in 0..rulerCount) {
+                val frac = i.toFloat() / rulerCount
+                val py = cBot - frac * (cBot - cTop)
+                c.drawLine(0f, py, width.toFloat(), py, sweepGridP)
+                val distVal = minD + frac * range
+                c.drawText(String.format("%.0f", distVal), 55f, py - 4f, sweepRulerTxtP)
+            }
+
+            // Trail
             val firstX = sweepHistory[0].first
             val firstY = cBot - ((sweepHistory[0].second - minD) / range) * (cBot - cTop)
             rPath.moveTo(firstX, firstY)
-
             for (i in 1 until sweepHistory.size) {
                 val prevX = sweepHistory[i - 1].first
                 val prevY = cBot - ((sweepHistory[i - 1].second - minD) / range) * (cBot - cTop)
                 val currX = sweepHistory[i].first
                 val currY = cBot - ((sweepHistory[i].second - minD) / range) * (cBot - cTop)
-                // Quadratic Bezier: control point is midpoint
-                val cpx = (prevX + currX) / 2f
-                val cpy = (prevY + currY) / 2f
+                val cpx = (prevX + currX) / 2f; val cpy = (prevY + currY) / 2f
                 rPath.quadTo(prevX, prevY, cpx, cpy)
             }
             c.drawPath(rPath, sweepTrailP)
         }
+
         c.drawLine(cx-40, cy, cx+40, cy, sweepCP); c.drawLine(cx, cy-40, cx, cy+40, sweepCP); c.drawCircle(cx, cy, 8f, sweepDotP)
         if (sweepDistanceCm > 0 && sweepTextCached.isNotEmpty()) {
             val w = sweepTextBounds.width()/2f + 20f; val h = sweepTextBounds.height()/2f + 20f
@@ -302,11 +348,43 @@ class MeasureOverlayView @JvmOverloads constructor(
         }
     }
 
+    // First-time tutorial
+    private fun drawTutorial(c: Canvas) {
+        val cx = width / 2f; val cy = height / 2f
+        c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), tutorialBgP)
+
+        c.drawText("📐 AR测距", cx, cy - 180f, tutorialTxtP)
+        c.drawText("点击屏幕测量距离", cx, cy - 130f, tutorialSubTxtP)
+
+        // Tap animation
+        val tapX = cx; val tapY = cy + 20f
+        val phase = (System.currentTimeMillis() % 2000) / 2000f
+        val dotAlpha = ((1f - phase) * 255).toInt()
+        val ringR = 10f + phase * 50f
+        tutorialDotP.alpha = dotAlpha
+        tutorialHandP.alpha = (dotAlpha * 0.6f).toInt()
+        c.drawCircle(tapX, tapY, 8f, tutorialDotP)
+        c.drawCircle(tapX, tapY, ringR, tutorialHandP)
+
+        // Finger icon
+        c.drawText("👆", cx - 12f, tapY + 60f, tutorialTxtP)
+
+        c.drawText("单点 · 两点 · 面积 · 扫掠", cx, cy + 130f, tutorialSubTxtP)
+        c.drawText("长按距离切换单位", cx, cy + 170f, tutorialSubTxtP)
+        c.drawText("点击任意位置开始", cx, cy + 230f, tutorialTxtP.apply { textSize = 28f })
+        tutorialTxtP.textSize = 32f // restore
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(event)
         if (scaleDetector.isInProgress) return true
         when (event.action) {
-            MotionEvent.ACTION_DOWN -> { if (sweepMode) onSweepMove?.invoke(event.x, event.y) else onTap?.invoke(event.x, event.y); return true }
+            MotionEvent.ACTION_DOWN -> {
+                if (showTutorial) { showTutorial = false; invalidate(); return true }
+                if (sweepMode) onSweepMove?.invoke(event.x, event.y)
+                else onTap?.invoke(event.x, event.y)
+                return true
+            }
             MotionEvent.ACTION_MOVE -> {
                 if (sweepMode) { onSweepMove?.invoke(event.x, event.y); return true }
                 onMove?.invoke(event.x, event.y); return true
