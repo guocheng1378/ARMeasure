@@ -36,8 +36,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     @Volatile private var currentFocusDistance: Float = -1f
 
     private enum class Mode { POINT, LINE, AREA, SWEEP }
-    private enum class Unit { CM, INCH, M }
-    private var currentUnit = Unit.CM
+    private enum class MeasureUnit { CM, INCH, M }
+    private var currentUnit = MeasureUnit.CM
 
     // Calibration
     private var calibrationFactor = 1.0f
@@ -268,9 +268,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var cachedVfov: Double = Double.NaN
 
     private fun convertUnit(cm: Float): Pair<Float, String> = when (currentUnit) {
-        Unit.CM -> Pair(cm, "cm")
-        Unit.INCH -> Pair(cm / 2.54f, "in")
-        Unit.M -> Pair(cm / 100f, "m")
+        MeasureUnit.CM -> Pair(cm, "cm")
+        MeasureUnit.INCH -> Pair(cm / 2.54f, "in")
+        MeasureUnit.M -> Pair(cm / 100f, "m")
     }
 
     private fun formatDistance(cm: Float): String {
@@ -280,9 +280,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun formatArea(cm2: Float): String {
         val (v, u) = when (currentUnit) {
-            Unit.CM -> Pair(cm2, "cm²")
-            Unit.INCH -> Pair(cm2 / (2.54f * 2.54f), "in²")
-            Unit.M -> Pair(cm2 / 10000f, "m²")
+            MeasureUnit.CM -> Pair(cm2, "cm²")
+            MeasureUnit.INCH -> Pair(cm2 / (2.54f * 2.54f), "in²")
+            MeasureUnit.M -> Pair(cm2 / 10000f, "m²")
         }
         return String.format("%.1f %s", v, u)
     }
@@ -691,8 +691,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var lastRawCm: Float = -1f  // store last raw cm value for unit re-display
 
     private fun cycleUnit() {
-        currentUnit = when (currentUnit) { Unit.CM -> Unit.INCH; Unit.INCH -> Unit.M; Unit.M -> Unit.CM }
-        val label = when (currentUnit) { Unit.CM -> "厘米"; Unit.INCH -> "英寸"; Unit.M -> "米" }
+        currentUnit = when (currentUnit) { MeasureUnit.CM -> MeasureUnit.INCH; MeasureUnit.INCH -> MeasureUnit.M; MeasureUnit.M -> MeasureUnit.CM }
+        val label = when (currentUnit) { MeasureUnit.CM -> "厘米"; MeasureUnit.INCH -> "英寸"; MeasureUnit.M -> "米" }
         Toast.makeText(this, "单位: $label", Toast.LENGTH_SHORT).show()
         if (lastRawCm > 0 && currentMode == Mode.POINT) {
             measuredResult = formatDistance(lastRawCm)
@@ -785,7 +785,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun saveToHistory(result: String, modeStr: String) {
         val entry = HistoryEntry(System.currentTimeMillis(), modeStr, result, when(currentUnit) {
-            Unit.CM -> "cm"; Unit.INCH -> "in"; Unit.M -> "m"
+            MeasureUnit.CM -> "cm"; MeasureUnit.INCH -> "in"; MeasureUnit.M -> "m"
         })
         measurementHistory.add(0, entry)
         if (measurementHistory.size > 50) measurementHistory.removeAt(measurementHistory.size - 1)
