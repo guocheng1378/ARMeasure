@@ -469,13 +469,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val hasRotation = Math.abs(deltaPitch) > 0.005f || Math.abs(deltaRoll) > 0.005f
                 val arr = cameraCtrl.rgbSensorActiveArray
-                val effImgW = arr?.width() ?: vw.toInt()
-                val effImgH = arr?.height() ?: vh.toInt()
+                val imgW = arr?.width() ?: vw.toInt()
+                val imgH = arr?.height() ?: vh.toInt()
                 val dist = if (intrinsics != null && intrinsics.size >= 4) {
                     if (hasRotation)
-                        MeasurementEngine.compute3DDistanceIntrinsicRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, effImgW, effImgH, deltaPitch, deltaRoll)
+                        MeasurementEngine.compute3DDistanceIntrinsicRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH, deltaPitch, deltaRoll)
                     else
-                        MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, effImgW, effImgH)
+                        MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
                 } else {
                     if (hasRotation)
                         MeasurementEngine.compute3DDistanceRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees(), deltaPitch, deltaRoll)
@@ -483,7 +483,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                         MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
                 val rawUnc = if (intrinsics != null && intrinsics.size >= 4) {
-                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, effImgW, effImgH)
+                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, imgW, imgH)
                 } else {
                     MeasurementEngine.compute3DDistanceUncertaintyFOV(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
