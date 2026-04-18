@@ -248,26 +248,20 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     // ── Measurement ──────────────────────────────────────────
 
     private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null, skipImu: Boolean = false): Float? {
+        // Priority: depth map (spatial) > AF focus distance > ToF (center-only, no spatial info)
         var raw: Float? = null
-        if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy, depthFilterOverride ?: depthFilter)
-        val tofDist = tofHelper.getDistanceCm()
-        if (raw != null && raw > 0 && tofDist != null && tofDist > 0) {
-            // Fix #3: downweight ToF when tap is far from screen center (ToF measures center)
-            val vw = cachedViewWidth; val vh = cachedViewHeight
-            val tofSpatialPenalty = if (vw > 0 && vh > 0) {
-                val nx = (sx / vw - 0.5f) * 2f
-                val ny = (sy / vh - 0.5f) * 2f
-                val distFromCenter = Math.sqrt((nx * nx + ny * ny).toDouble()).toFloat()
-                // 1.0 at center, grows to ~3.0 at corners
-                (1f + distFromCenter * distFromCenter * 2f).coerceAtMost(10f)
-            } else 1f
-            val tofVar = AppConstants.TOF_VARIANCE * tofSpatialPenalty
-            val depthVar = if (raw < AppConstants.DEPTH16_CLOSE_THRESHOLD_CM) AppConstants.DEPTH16_VARIANCE_CLOSE else AppConstants.DEPTH16_VARIANCE_FAR
-            raw = MeasurementEngine.fuseDepth(raw, depthVar, tofDist, tofVar)
-        } else if (raw == null || raw <= 0) {
-            raw = tofDist
+        if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
+            raw = getDepthAtScreenPoint(sx, sy, depthFilterOverride ?: depthFilter)
         }
-        if (raw == null || raw <= 0) { val d = currentFocusDistance; if (d > 0) raw = d * 100f }
+        if (raw == null || raw <= 0) {
+            // No depth map — try AF focus distance (varies with focus point)
+            val d = currentFocusDistance
+            if (d > 0) raw = d * 100f
+        }
+        if (raw == null || raw <= 0) {
+            // Last resort: ToF (center-only, no spatial info — only accurate near screen center)
+            raw = tofHelper.getDistanceCm()
+        }
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
         if (!skipImu && raw != null && raw > 0 && imuHelper.isAvailable()) {
             val vw = cachedViewWidth; val vh = cachedViewHeight
