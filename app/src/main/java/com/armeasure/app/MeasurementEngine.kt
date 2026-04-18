@@ -73,6 +73,93 @@ object MeasurementEngine {
     }
 
     /**
+     * Properly propagate depth uncertainty through the 3D distance formula.
+     *
+     * For intrinsic projection:
+     *   dist² = d1²[((ix1-cx)/fx)² + ((iy1-cy)/fy)² + 1] + d2²[((ix2-cx)/fx)² + ((iy2-cy)/fy)² + 1]
+     *           - 2*d1*d2*[((ix1-cx)(ix2-cx)/fx²) + ((iy1-cy)(iy2-cy)/fy²) + 1]
+     *
+     * ∂dist/∂d1 = (d1*A - d2*B) / dist
+     * ∂dist/∂d2 = (d2*C - d1*B) / dist
+     *
+     * where A = 1 + ((ix1-cx)/fx)² + ((iy1-cy)/fy)²
+     *       C = 1 + ((ix2-cx)/fx)² + ((iy2-cy)/fy)²
+     *       B = 1 + ((ix1-cx)(ix2-cx)/fx²) + ((iy1-cy)(iy2-cy)/fy²)
+     *
+     * σ_dist² = (∂dist/∂d1)² σ₁² + (∂dist/∂d2)² σ₂²
+     *
+     * @return uncertainty in cm
+     */
+    fun compute3DDistanceUncertaintyIntrinsic(
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        d1: Float, d2: Float,
+        sigma1: Float, sigma2: Float,
+        viewW: Float, viewH: Float,
+        intrinsics: FloatArray, imgW: Int, imgH: Int
+    ): Float {
+        if (sigma1 <= 0 && sigma2 <= 0) return 0f
+        val fx = intrinsics[0]; val fy = intrinsics[1]
+        val cx = intrinsics[2]; val cy = intrinsics[3]
+        val ix1 = x1 / viewW * imgW; val iy1 = y1 / viewH * imgH
+        val ix2 = x2 / viewW * imgW; val iy2 = y2 / viewH * imgH
+        val u1 = (ix1 - cx) / fx; val v1 = (iy1 - cy) / fy
+        val u2 = (ix2 - cx) / fx; val v2 = (iy2 - cy) / fy
+        val A = 1f + u1 * u1 + v1 * v1
+        val C = 1f + u2 * u2 + v2 * v2
+        val B = 1f + u1 * u2 + v1 * v2
+        val dist = compute3DDistanceIntrinsic(x1, y1, x2, y2, d1, d2, viewW, viewH, intrinsics, imgW, imgH)
+        if (dist < 0.1f) return (sigma1 + sigma2)
+        val dd1 = (d1 * A - d2 * B) / dist
+        val dd2 = (d2 * C - d1 * B) / dist
+        return sqrt((dd1 * sigma1) * (dd1 * sigma1) + (dd2 * sigma2) * (dd2 * sigma2))
+    }
+
+    /**
+     * Uncertainty propagation for FOV-based 3D distance.
+     * σ_dist² = (∂dist/∂d1)² σ₁² + (∂dist/∂d2)² σ₂²
+     */
+    fun compute3DDistanceUncertaintyFOV(
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        d1: Float, d2: Float,
+        sigma1: Float, sigma2: Float,
+        viewW: Float, viewH: Float,
+        hfovDeg: Double, vfovDeg: Double
+    ): Float {
+        if (sigma1 <= 0 && sigma2 <= 0) return 0f
+        val hfov = Math.toRadians(hfovDeg)
+        val vfov = Math.toRadians(vfovDeg)
+        val clampFactor = AppConstants.FOV_TAN_CLAMP.toDouble()
+        val nx1 = ((x1 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val ny1 = ((0.5f - y1 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val nx2 = ((x2 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val ny2 = ((0.5f - y2 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val ta1 = Math.tan(nx1 * hfov / 2); val tb1 = Math.tan(ny1 * vfov / 2)
+        val ta2 = Math.tan(nx2 * hfov / 2); val tb2 = Math.tan(ny2 * vfov / 2)
+        val A = 1.0 + ta1 * ta1 + tb1 * tb1
+        val C = 1.0 + ta2 * ta2 + tb2 * tb2
+        val B = 1.0 + ta1 * ta2 + tb1 * tb2
+        val dist = compute3DDistance(x1, y1, x2, y2, d1, d2, viewW, viewH, hfovDeg, vfovDeg)
+        if (dist < 0.1f) return (sigma1 + sigma2)
+        val dd1 = (d1 * A - d2 * B) / dist
+        val dd2 = (d2 * C - d1 * B) / dist
+        return sqrt((dd1 * sigma1) * (dd1 * sigma1) + (dd2 * sigma2) * (dd2 * sigma2))
+    }
+
+    /**
+     * Edge penalty factor for depth at screen edge pixels.
+     * Pixels near screen edges have larger angular error, amplifying depth noise in 3D.
+     * Returns a multiplier > 1 for edge pixels, 1.0 for center.
+     */
+    fun edgeUncertaintyMultiplier(sx: Float, sy: Float, viewW: Float, viewH: Float): Float {
+        if (viewW <= 0 || viewH <= 0) return 1f
+        val nx = (sx / viewW - 0.5f) * 2f  // [-1, 1]
+        val ny = (sy / viewH - 0.5f) * 2f
+        val distFromCenter = sqrt((nx * nx + ny * ny).toDouble()).toFloat()
+        // 0 at center, ~1.4 at corner → multiplier ranges from 1.0 to ~2.0
+        return (1f + distFromCenter * 0.7f).coerceAtMost(3f)
+    }
+
+    /**
      * Compute true 3D surface area of a polygon in cm².
      * Each point has (px, py, depth) where px/py are horizontal/vertical offsets from camera center,
      * and depth is the measured distance along the view direction.

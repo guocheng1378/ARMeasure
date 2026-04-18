@@ -61,6 +61,47 @@ class MeasurementEngineTest {
     }
 
     @Test
+    fun `uncertainty propagation is positive and reasonable`() {
+        val unc = MeasurementEngine.compute3DDistanceUncertaintyFOV(
+            x1 = 400f, y1 = 800f, x2 = 680f, y2 = 1100f,
+            d1 = 100f, d2 = 100f,
+            sigma1 = 5f, sigma2 = 5f,
+            viewW = 1080f, viewH = 1920f,
+            hfovDeg = 65.0, vfovDeg = 50.0
+        )
+        assertTrue("Uncertainty should be positive, got $unc", unc > 0f)
+        assertTrue("Uncertainty should be < 20cm for nearby points, got $unc", unc < 20f)
+    }
+
+    @Test
+    fun `uncertainty grows with depth noise`() {
+        val uncLow = MeasurementEngine.compute3DDistanceUncertaintyFOV(
+            x1 = 400f, y1 = 800f, x2 = 680f, y2 = 1100f,
+            d1 = 100f, d2 = 100f, sigma1 = 2f, sigma2 = 2f,
+            viewW = 1080f, viewH = 1920f, hfovDeg = 65.0, vfovDeg = 50.0
+        )
+        val uncHigh = MeasurementEngine.compute3DDistanceUncertaintyFOV(
+            x1 = 400f, y1 = 800f, x2 = 680f, y2 = 1100f,
+            d1 = 100f, d2 = 100f, sigma1 = 10f, sigma2 = 10f,
+            viewW = 1080f, viewH = 1920f, hfovDeg = 65.0, vfovDeg = 50.0
+        )
+        assertTrue("Higher noise should give higher uncertainty", uncHigh > uncLow)
+    }
+
+    @Test
+    fun `edge penalty is 1 at center`() {
+        val mult = MeasurementEngine.edgeUncertaintyMultiplier(540f, 960f, 1080f, 1920f)
+        assertEquals(1.0f, mult, 0.05f)
+    }
+
+    @Test
+    fun `edge penalty is higher at corners`() {
+        val centerMult = MeasurementEngine.edgeUncertaintyMultiplier(540f, 960f, 1080f, 1920f)
+        val cornerMult = MeasurementEngine.edgeUncertaintyMultiplier(0f, 0f, 1080f, 1920f)
+        assertTrue("Corner should have higher penalty than center", cornerMult > centerMult)
+    }
+
+    @Test
     fun `polygon area of triangle`() {
         val pts = listOf(Pair(0f, 0f), Pair(10f, 0f), Pair(0f, 10f))
         val area = MeasurementEngine.computePolygonArea(pts)

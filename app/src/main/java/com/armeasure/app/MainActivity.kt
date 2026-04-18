@@ -460,39 +460,60 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             // Multi-sample depth for second point — async
             val d1 = firstDistance
             val u1 = firstUncertainty
-            val motionFactor = when {
-                !imuAvail -> 1f
-                motion != null -> when {
-                    motion.excessive -> 0.85f
-                    motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 0.9f
-                    else -> 1f
-                }
-                else -> 1f
-            }
-            val d1Corr = d1 * motionFactor
+
             collectDepthSamples(x, y, onProgress = { cur, total ->
                 runOnUiThread { binding.tvDistance.text = "采样中(2/2) $cur/$total..." }
             }) { result2 ->
-                val d2 = (result2?.depthCm ?: d1Corr) * motionFactor
+                val d2 = result2?.depthCm ?: d1
                 val u2 = result2?.uncertaintyCm ?: 0f
 
-                // #3: Depth consistency check
-                val depthRatio = if (d1Corr > 0 && d2 > 0) maxOf(d1Corr, d2) / minOf(d1Corr, d2) else 1f
+                // Depth consistency check
+                val depthRatio = if (d1 > 0 && d2 > 0) maxOf(d1, d2) / minOf(d1, d2) else 1f
                 val consistencyWarn = if (depthRatio > AppConstants.DEPTH_CONSISTENCY_MAX_RATIO)
                     "⚠️ 两点平面差距大(${String.format("%.1f", depthRatio)}x)" else null
 
-                // #1: Use cached surface dimensions for thread safety
+                // Use cached surface dimensions for thread safety
                 val vw = cachedViewWidth; val vh = cachedViewHeight
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val dist = if (intrinsics != null && intrinsics.size >= 4) {
                     val arr = cameraCtrl.rgbSensorActiveArray
                     val imgW = arr?.width() ?: vw.toInt()
                     val imgH = arr?.height() ?: vh.toInt()
-                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1Corr, d2, vw, vh, intrinsics, imgW, imgH)
+                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
                 } else {
-                    MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1Corr, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
-                val totalUnc = sqrt(u1 * u1 + u2 * u2)
+
+                // Proper uncertainty propagation through 3D distance formula
+                val rawUnc = if (intrinsics != null && intrinsics.size >= 4) {
+                    val arr = cameraCtrl.rgbSensorActiveArray
+                    val imgW = arr?.width() ?: vw.toInt()
+                    val imgH = arr?.height() ?: vh.toInt()
+                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(
+                        p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, imgW, imgH)
+                } else {
+                    MeasurementEngine.compute3DDistanceUncertaintyFOV(
+                        p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                }
+
+                // Edge penalty: edge pixels have larger angular error
+                val edge1 = MeasurementEngine.edgeUncertaintyMultiplier(p1.x, p1.y, vw, vh)
+                val edge2 = MeasurementEngine.edgeUncertaintyMultiplier(p2.x, p2.y, vw, vh)
+                val edgePenalty = (edge1 + edge2) / 2f
+
+                // IMU motion discount: motion degrades depth reliability
+                val motionConfidence = when {
+                    !imuAvail -> 1f
+                    motion != null -> when {
+                        motion.excessive -> 1.5f   // inflate uncertainty by 50%
+                        motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
+                        else -> 1f
+                    }
+                    else -> 1f
+                }
+
+                val totalUnc = rawUnc * edgePenalty * motionConfidence
+
                 runOnUiThread {
                     measuredResult = formatDistance(dist)
                     val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
@@ -501,7 +522,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
                     binding.overlayView.lineDistanceLabels = listOf(displayText)
                     updateOverlay(); firstPoint = null
-                    binding.overlayView.animateLineExpand()  // #1: expand animation
+                    binding.overlayView.animateLineExpand()  // expand animation
                     saveToHistory(measuredResult, "两点")
                 }
             }
