@@ -96,6 +96,11 @@ class MeasureOverlayView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeWidth = 1.5f
     }
+    // Arrow head: filled triangle at line endpoints
+    private val arrowP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
     // Placement crosshair: brighter, animated
     private val placeCrossP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -127,6 +132,7 @@ class MeasureOverlayView @JvmOverloads constructor(
 
     private val rRect = Rect()
     private val rPath = Path()
+    private val arrowPath = Path()
 
     // ── Pulse animation state ──
     private var pulseRadius = 0f
@@ -163,13 +169,16 @@ class MeasureOverlayView @JvmOverloads constructor(
             canvas.drawPath(rPath, areaFillP)
         }
 
-        // Lines — Apple style: glow + solid
+        // Lines — Apple style: glow + solid + arrows at both ends
         for (i in lines.indices) {
             val (p1, p2) = lines[i]
             // Glow layer
             canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineGlowP)
             // Main solid line
             canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineP)
+            // Arrow heads pointing inward (Apple dimension-line style)
+            drawArrowHead(canvas, p1.x, p1.y, p2.x, p2.y)
+            drawArrowHead(canvas, p2.x, p2.y, p1.x, p1.y)
         }
 
         // Distance labels above lines (Apple-style capsule)
@@ -209,6 +218,46 @@ class MeasureOverlayView @JvmOverloads constructor(
             canvas.drawLine(px, py - 30, px, py + 30, placeCrossP)
             canvas.drawCircle(px, py, 5f, dotP)
         }
+    }
+
+    /**
+     * Draw an arrow head at (fromX, fromY) pointing toward (toX, toY).
+     * Apple-style: small filled triangle, ~14px long.
+     */
+    private fun drawArrowHead(canvas: Canvas, fromX: Float, fromY: Float, toX: Float, toY: Float) {
+        val dx = toX - fromX
+        val dy = toY - fromY
+        val len = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+        if (len < 1f) return
+
+        // Unit vector along line direction
+        val ux = dx / len
+        val uy = dy / len
+        // Perpendicular vector
+        val px = -uy
+        val py = ux
+
+        val arrowLen = 14f   // arrow length along line
+        val arrowWid = 7f    // half-width perpendicular
+
+        // Tip is at the endpoint
+        val tipX = fromX
+        val tipY = fromY
+        // Base center (pulled back along line)
+        val baseX = fromX + ux * arrowLen
+        val baseY = fromY + uy * arrowLen
+        // Left and right base corners
+        val lx = baseX + px * arrowWid
+        val ly = baseY + py * arrowWid
+        val rx = baseX - px * arrowWid
+        val ry = baseY - py * arrowWid
+
+        arrowPath.reset()
+        arrowPath.moveTo(tipX, tipY)
+        arrowPath.lineTo(lx, ly)
+        arrowPath.lineTo(rx, ry)
+        arrowPath.close()
+        canvas.drawPath(arrowPath, arrowP)
     }
 
     /**
