@@ -65,36 +65,51 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var firstUncertainty: Float = 0f
     /** Apple-like: stored 3D world coordinates of first point (camera frame at tap time) */
     @Volatile private var firstWorld3D: Triple<Float, Float, Float>? = null
-    /** Read raw depth at screen point without modifying shared Kalman state (for preview). */
+    /** Read smoothed depth at screen point (3×3 neighbor median) without modifying shared Kalman state. */
     private fun getRawDepthAt(sx: Float, sy: Float): Float? {
         val buf = depthBuffer ?: return null
         if (buf.isEmpty() || depthWidth <= 0 || depthHeight <= 0) return null
         val vw = cachedViewWidth; val vh = cachedViewHeight
         if (vw <= 0 || vh <= 0) return null
-        val dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1)
-        val dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1)
-        val raw = buf[dy * depthWidth + dx].toInt() and 0x1FFF
-        return if (raw in 1..8191) raw / 10f else null
+        val cx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1)
+        val cy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1)
+        // 3×3 neighbor sampling → median (robust against single-pixel noise)
+        val samples = mutableListOf<Float>()
+        for (dy in -1..1) for (dx in -1..1) {
+            val px = (cx + dx).coerceIn(0, depthWidth - 1)
+            val py = (cy + dy).coerceIn(0, depthHeight - 1)
+            val raw = buf[py * depthWidth + px].toInt() and 0x1FFF
+            if (raw in 1..8191) samples.add(raw / 10f)
+        }
+        if (samples.size < 3) return null
+        samples.sort()
+        return samples[samples.size / 2] // median
     }
 
     /** Apple-like: stored 3D world coordinates of second point */
     @Volatile private var secondWorld3D: Triple<Float, Float, Float>? = null
     /** Line mode preview loop: samples depth at screen center, updates live distance */
+    /** EMA-smoothed preview distance (reset on each new preview session) */
+    private var previewDistEma = Float.NaN
     private val linePreviewRunnable = object : Runnable {
         override fun run() {
             if (!binding.overlayView.placingSecondPoint || firstWorld3D == null) return
             val w1 = firstWorld3D!!
             val cx = cachedViewWidth / 2f; val cy = cachedViewHeight / 2f
-            val d2 = getRawDepthAt(cx, cy) // Raw read — no Kalman state modification
+            val d2 = getRawDepthAt(cx, cy)
             if (d2 != null && d2 > 0) {
                 val w2 = screenToWorld3D(cx, cy, d2)
                 val (dp, dr) = if (imuHelper.isAvailable()) imuHelper.getRotationDeltaRad() else Pair(0f, 0f)
-                val dist = if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
+                val rawDist = if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
                     val (rx, ry, rz) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
                     MeasurementEngine.distance3D(Triple(rx, ry, rz), w2)
                 } else {
                     MeasurementEngine.distance3D(w1, w2)
                 }
+                // EMA smoothing: α=0.3 for stable display
+                previewDistEma = if (previewDistEma.isNaN()) rawDist else previewDistEma * 0.7f + rawDist * 0.3f
+                val dist = previewDistEma
+
                 val projP1 = if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
                     val (rx, ry, rz) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
                     world3DToScreen(rx, ry, rz)
@@ -532,7 +547,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.firstPointDepthCm = firstDistance
                     binding.tvDistance.text = "移动手机，点击确认"
                 }
-                // ★ Apple-like: start preview loop — samples depth at SCREEN CENTER
+                // Reset EMA and start preview loop
+                previewDistEma = Float.NaN
                 backgroundHandler?.post(linePreviewRunnable)
             }
         } else {
@@ -737,6 +753,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun resetMeasurement() {
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
         backgroundHandler?.removeCallbacks(linePreviewRunnable)
+        previewDistEma = Float.NaN
         synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
         firstWorld3D = null; secondWorld3D = null
