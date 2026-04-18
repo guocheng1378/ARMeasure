@@ -239,26 +239,28 @@ class MeasureOverlayView @JvmOverloads constructor(
             }
         }
 
-        if (placingSecondPoint && points.size == 1 && liveCrosshair != null) {
-            val p0 = points[0]; val cur = liveCrosshair!!
+        if (placingSecondPoint && points.size == 1) {
+            val p0 = points[0]
+            // ★ Apple-like: line goes from first point to SCREEN CENTER (crosshair position)
+            val cx = width / 2f; val cy = height / 2f
             // Live preview line
-            canvas.drawLine(p0.x, p0.y, cur.x, cur.y, previewP)
-            // Extension ticks at both endpoints (Apple style)
+            canvas.drawLine(p0.x, p0.y, cx, cy, previewP)
+            // Endpoint markers
             drawEndpointMarker(canvas, p0.x, p0.y, true)
-            drawEndpointMarker(canvas, cur.x, cur.y, false)
+            drawEndpointMarker(canvas, cx, cy, false)
             // Live distance label at midpoint
             if (liveDistanceCm > 0) {
-                val mx = (p0.x + cur.x) / 2f; val my = (p0.y + cur.y) / 2f
+                val mx = (p0.x + cx) / 2f; val my = (p0.y + cy) / 2f
                 drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
             }
-            // Per-point depth labels (small, near each endpoint)
+            // Per-point depth labels
             if (firstPointDepthCm > 0) {
                 drawDepthLabel(canvas, String.format("%.0fcm", firstPointDepthCm), p0.x, p0.y, above = true)
             }
             if (secondPointDepthCm > 0) {
-                drawDepthLabel(canvas, String.format("%.0fcm", secondPointDepthCm), cur.x, cur.y, above = true)
+                drawDepthLabel(canvas, String.format("%.0fcm", secondPointDepthCm), cx, cy, above = false)
             }
-            // Level indicator (Apple style: shows when phone is roughly horizontal)
+            // Level indicator
             if (deviceIsLevel) {
                 drawLevelBadge(canvas)
             }
