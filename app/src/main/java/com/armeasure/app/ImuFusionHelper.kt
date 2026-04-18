@@ -123,7 +123,16 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
             accumGyroX * accumGyroX + accumGyroY * accumGyroY + accumGyroZ * accumGyroZ
         )).toFloat()
 
-        val maxRotDeg = maxOf(rotDeg, gyroRotDeg)
+        // Weighted blend of complementary-filter rotation and raw gyro integral
+        // Complementary filter is smoother but may correct away large rotations
+        // Gyro integral catches transient rotations but drifts over time
+        val maxRotDeg = if (gyroRotDeg > rotDeg * 2f) {
+            // Gyro detected significantly more rotation → trust it (complementary filter corrected it away)
+            gyroRotDeg
+        } else {
+            // Normal case: complementary filter is more reliable
+            rotDeg
+        }
 
         // #7: velocity is now properly integrated via trapezoidal rule
         val elapsedNs = System.nanoTime() - snapTimestamp
@@ -212,7 +221,7 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
 
         gyroRoll += gyroX * dt
         gyroPitch += gyroY * dt
-        val ap = atan2(-accelX.toDouble(), sqrt((accelY * accelY + accelZ * accelZ).toDouble())).toFloat()
+        val ap = atan2(-accelX.toDouble(), sqrt((accelY * accelY + accelZ * accelZ).toDouble()).coerceAtLeast(0.1)).toFloat()
         val ar = atan2(accelY.toDouble(), accelZ.toDouble()).toFloat()
         // #4: adaptive alpha using constants
         val accelMag = sqrt((accelX * accelX + accelY * accelY + accelZ * accelZ).toDouble())

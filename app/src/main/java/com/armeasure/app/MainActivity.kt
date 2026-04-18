@@ -330,20 +330,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }
             return raw
         }
-        // Priority: depth map (spatial) > AF focus distance > ToF (center-only, no spatial info)
-        var raw: Float? = null
+
+        // #1: True DEPTH16 + ToF inverse-variance fusion (not serial fallback)
+        val activeFilter = depthFilterOverride ?: depthFilter
+        var depthMapCm: Float? = null
+        var tofCm: Float? = null
+
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
-            raw = getDepthAtScreenPoint(sx, sy, depthFilterOverride ?: depthFilter)
+            depthMapCm = getDepthAtScreenPoint(sx, sy, activeFilter)
         }
-        if (raw == null || raw <= 0) {
-            // No depth map — try AF focus distance (varies with focus point)
-            val d = currentFocusDistance
-            if (d > 0) raw = d * 100f
+        tofCm = tofHelper.getDistanceCm()
+
+        // Fusion: inverse-variance weighted average when both sources available
+        var raw: Float? = when {
+            depthMapCm != null && depthMapCm > 0 && tofCm != null && tofCm > 0 -> {
+                val varDepth = if (depthMapCm < AppConstants.DEPTH16_CLOSE_THRESHOLD_CM)
+                    AppConstants.DEPTH16_VARIANCE_CLOSE else AppConstants.DEPTH16_VARIANCE_FAR
+                val varTof = AppConstants.TOF_VARIANCE
+                MeasurementEngine.fuseDepth(depthMapCm, varDepth, tofCm, varTof)
+            }
+            depthMapCm != null && depthMapCm > 0 -> depthMapCm
+            else -> {
+                // No depth map — try AF focus distance
+                val d = currentFocusDistance
+                if (d > 0) d * 100f else tofCm
+            }
         }
-        if (raw == null || raw <= 0) {
-            // Last resort: ToF (center-only, no spatial info — only accurate near screen center)
-            raw = tofHelper.getDistanceCm()
-        }
+
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
         if (!skipImu && raw != null && raw > 0 && imuHelper.isAvailable()) {
             val vw = cachedViewWidth; val vh = cachedViewHeight
@@ -382,6 +395,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             maxJumpMm = AppConstants.DEPTH_MAX_JUMP_MM, maxRangeMm = AppConstants.DEPTH_MAX_RANGE_MM,
             processNoise = AppConstants.DEPTH_PROCESS_NOISE, initMeasureNoise = AppConstants.DEPTH_INIT_MEASURE_NOISE
         )
+        // #7: Warm start from main filter for faster convergence
+        localFilter.warmStartFrom(depthFilter)
         val samples = mutableListOf<Float>()
         var sampleIndex = 0
         fun nextSample() {
@@ -1128,6 +1143,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 (1f - (neighborVariance - AppConstants.DEPTH_EDGE_VARIANCE_THRESHOLD) / AppConstants.DEPTH_EDGE_VARIANCE_THRESHOLD)
                     .coerceAtLeast(AppConstants.DEPTH_EDGE_CONFIDENCE_MIN)
             } else 1f
+
+            // #3: Motion-adaptive Kalman process noise
+            if (imuHelper.isAvailable() && filter === depthFilter) {
+                val motion = imuHelper.checkMotionSince()
+                val motionFactor = when {
+                    motion.excessive -> 5f
+                    motion.rotationDeg > 2f -> 2f
+                    else -> 0.5f
+                }
+                filter.setProcessNoise(AppConstants.DEPTH_PROCESS_NOISE * motionFactor)
+            }
 
             val filtered = filter.filter((wSum / wtSum).toFloat())
             // At object edges, reduce confidence (return null to trigger ToF/AF fallback)

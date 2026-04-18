@@ -12,7 +12,7 @@ class DistanceFilter(
     @Suppress("unused") private val alpha: Float = 0.4f, // legacy, not used by Kalman
     private val maxJumpMm: Float = 0f,
     private val maxRangeMm: Float = 0f,
-    private val processNoise: Float = 50f,
+    private var processNoise: Float = 50f,
     private val initMeasureNoise: Float = 400f
 ) {
     private val medianBuffer = FloatArray(windowSize) { -1f }
@@ -93,4 +93,19 @@ class DistanceFilter(
 
     fun getCurrentValue(): Float = estimate
     fun isWarmedUp(): Boolean = medianFilled || medianPos >= 2
+
+    /** #3: Dynamically adjust process noise based on IMU motion state */
+    fun setProcessNoise(q: Float) {
+        processNoise = q.coerceAtLeast(1f)
+    }
+
+    /** #7: Copy Kalman state from another filter for faster convergence */
+    fun warmStartFrom(other: DistanceFilter) {
+        if (other.kalmanInitialized && other.estimate > 0) {
+            estimate = other.estimate
+            errorCov = other.errorCov * 2f  // slightly higher uncertainty to allow adaptation
+            kalmanInitialized = true
+            tickCount = other.tickCount.coerceAtMost(windowSize)  // keep spike-check skip window
+        }
+    }
 }

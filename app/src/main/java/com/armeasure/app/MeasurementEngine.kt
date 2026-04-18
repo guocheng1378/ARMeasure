@@ -449,39 +449,25 @@ object MeasurementEngine {
         var bestInlierCount = 0
         val n = pts3d.size
 
-        for (iter in 0 until ransacIterations) {
-            // Pick 3 random distinct points
-            val i1 = (Math.random() * n).toInt().coerceIn(0, n - 1)
-            var i2 = (Math.random() * n).toInt().coerceIn(0, n - 1)
-            while (i2 == i1) i2 = (Math.random() * n).toInt().coerceIn(0, n - 1)
-            var i3 = (Math.random() * n).toInt().coerceIn(0, n - 1)
-            while (i3 == i1 || i3 == i2) i3 = (Math.random() * n).toInt().coerceIn(0, n - 1)
+        // #6: Exhaustive enumeration for small N, random sampling for large N
+        val totalCombinations = n * (n - 1) * (n - 2) / 6
+        val useExhaustive = totalCombinations <= ransacIterations
 
-            val (ax, ay, az) = pts3d[i1]
-            val (bx, by, bz) = pts3d[i2]
-            val (cx, cy, cz) = pts3d[i3]
-
-            // Plane normal via cross product
-            val u1 = bx - ax; val u2 = by - ay; val u3 = bz - az
-            val v1 = cx - ax; val v2 = cy - ay; val v3 = cz - az
-            val nx = u2 * v3 - u3 * v2
-            val ny = u3 * v1 - u1 * v3
-            val nz = u1 * v2 - u2 * v1
-            val normLen = sqrt((nx * nx + ny * ny + nz * nz).toDouble())
-            if (normLen < 1e-6) continue
-            val pnx = nx / normLen; val pny = ny / normLen; val pnz = nz / normLen
-            val pd = -(pnx * ax + pny * ay + pnz * az)
-
-            // Count inliers
-            var inliers = 0
-            for (k in 0 until n) {
-                val (px, py, pz) = pts3d[k]
-                val dist = Math.abs(pnx * px + pny * py + pnz * pz + pd)
-                if (dist < inlierThreshold) inliers++
+        if (useExhaustive) {
+            // Deterministic: try all C(n,3) combinations
+            for (i in 0 until n - 2) for (j in i + 1 until n - 1) for (k in j + 1 until n) {
+                val (inliers, plane) = evaluatePlane(pts3d, i, j, k, inlierThreshold)
+                if (inliers > bestInlierCount) { bestInlierCount = inliers; bestPlane = plane }
             }
-            if (inliers > bestInlierCount) {
-                bestInlierCount = inliers
-                bestPlane = doubleArrayOf(pnx, pny, pnz, pd)
+        } else {
+            // Random sampling with pre-shuffled indices (no duplicates)
+            val rng = java.util.Random(42) // deterministic seed for reproducibility
+            for (iter in 0 until ransacIterations) {
+                val i1 = rng.nextInt(n)
+                var i2 = rng.nextInt(n); while (i2 == i1) i2 = rng.nextInt(n)
+                var i3 = rng.nextInt(n); while (i3 == i1 || i3 == i2) i3 = rng.nextInt(n)
+                val (inliers, plane) = evaluatePlane(pts3d, i1, i2, i3, inlierThreshold)
+                if (inliers > bestInlierCount) { bestInlierCount = inliers; bestPlane = plane }
             }
         }
 
@@ -522,5 +508,34 @@ object MeasurementEngine {
         }
 
         return computePolygonArea(projected)
+    }
+
+    /** #6: Evaluate a plane from 3 points, count inliers. Returns (inlierCount, plane) pair. */
+    private fun evaluatePlane(
+        pts3d: List<Triple<Float, Float, Float>>,
+        i1: Int, i2: Int, i3: Int,
+        inlierThreshold: Float
+    ): Pair<Int, DoubleArray> {
+        val (ax, ay, az) = pts3d[i1]
+        val (bx, by, bz) = pts3d[i2]
+        val (cx, cy, cz) = pts3d[i3]
+
+        val u1 = bx - ax; val u2 = by - ay; val u3 = bz - az
+        val v1 = cx - ax; val v2 = cy - ay; val v3 = cz - az
+        val nx = u2 * v3 - u3 * v2
+        val ny = u3 * v1 - u1 * v3
+        val nz = u1 * v2 - u2 * v1
+        val normLen = sqrt((nx * nx + ny * ny + nz * nz).toDouble())
+        if (normLen < 1e-6) return Pair(0, doubleArrayOf(0.0, 0.0, 1.0, 0.0))
+        val pnx = nx / normLen; val pny = ny / normLen; val pnz = nz / normLen
+        val pd = -(pnx * ax + pny * ay + pnz * az)
+
+        var inliers = 0
+        for (k in pts3d.indices) {
+            val (px, py, pz) = pts3d[k]
+            val dist = Math.abs(pnx * px + pny * py + pnz * pz + pd)
+            if (dist < inlierThreshold) inliers++
+        }
+        return Pair(inliers, doubleArrayOf(pnx, pny, pnz, pd))
     }
 }
