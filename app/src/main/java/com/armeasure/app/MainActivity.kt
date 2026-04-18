@@ -284,34 +284,55 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             return raw
         }
 
-        // #1: True DEPTH16 + ToF inverse-variance fusion (not serial fallback)
+        // 深度采集: Depth16 + ToF + AF 自适应融合
         val activeFilter = depthFilterOverride ?: depthFilter
         var depthMapCm: Float? = null
-        var tofCm: Float? = null
+        val tofCm = tofHelper.getDistanceCm()
 
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
             depthMapCm = getDepthAtScreenPoint(sx, sy, activeFilter)
         }
-        tofCm = tofHelper.getDistanceCm()
 
-        // Fusion: inverse-variance weighted average when both sources available
-        var raw: Float? = when {
-            depthMapCm != null && depthMapCm > 0 && tofCm != null && tofCm > 0 -> {
+        // AF 焦距回退 (屈光度 → cm)
+        val afCm = run {
+            val d = currentFocusDistance
+            if (d > 0.1f) {
+                val cm = (1f / d) * 100f
+                if (cm in 5f..2000f) cm else null
+            } else null
+        }
+
+        // ── 自适应融合 ──
+        var raw: Float? = null
+
+        // 有 Depth16 深度图: 跟 ToF 做置信度加权融合
+        if (depthMapCm != null && depthMapCm > 0) {
+            raw = if (tofCm != null && tofCm > 0) {
                 val varDepth = if (depthMapCm < AppConstants.DEPTH16_CLOSE_THRESHOLD_CM)
                     AppConstants.DEPTH16_VARIANCE_CLOSE else AppConstants.DEPTH16_VARIANCE_FAR
-                val varTof = AppConstants.TOF_VARIANCE
+                val varTof = tofHelper.estimatedVariance() // 动态方差
                 MeasurementEngine.fuseDepth(depthMapCm, varDepth, tofCm, varTof)
+            } else {
+                depthMapCm
             }
-            depthMapCm != null && depthMapCm > 0 -> depthMapCm
-            else -> {
-                // No depth map — try AF focus distance (hyperfocal model: ~1/diopter)
-                val d = currentFocusDistance
-                if (d > 0.1f) {
-                    // d is in diopters (1/m). Clamp to reasonable range: 10cm ~ 10m
-                    val cm = (1f / d) * 100f
-                    if (cm in 5f..2000f) cm else tofCm
-                } else tofCm
+        }
+        // 没有 Depth16: ToF + AF 自适应融合
+        else if (tofCm != null && tofCm > 0) {
+            raw = if (afCm != null && afCm > 0) {
+                val tofConf = tofHelper.confidence()
+                val varTof = tofHelper.estimatedVariance()
+                // AF 方差固定较大 (AF 本身不准，σ≈15cm)
+                val varAf = 225f
+                // ToF 置信度低时: 降低 ToF 权重，提高 AF 权重
+                val adjustedVarTof = varTof / tofConf.coerceAtLeast(0.1f)
+                MeasurementEngine.fuseDepth(tofCm, adjustedVarTof, afCm, varAf)
+            } else {
+                tofCm
             }
+        }
+        // 只有 AF
+        else if (afCm != null && afCm > 0) {
+            raw = afCm
         }
 
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
