@@ -64,7 +64,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     @Volatile private var firstDistance: Float = 0f
     private var firstUncertainty: Float = 0f
     /** Apple-like: stored 3D world coordinates of first point (camera frame at tap time) */
-    private var firstWorld3D: Triple<Float, Float, Float>? = null
+    @Volatile private var firstWorld3D: Triple<Float, Float, Float>? = null
     /** Read raw depth at screen point without modifying shared Kalman state (for preview). */
     private fun getRawDepthAt(sx: Float, sy: Float): Float? {
         val buf = depthBuffer ?: return null
@@ -78,7 +78,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     /** Apple-like: stored 3D world coordinates of second point */
-    private var secondWorld3D: Triple<Float, Float, Float>? = null
+    @Volatile private var secondWorld3D: Triple<Float, Float, Float>? = null
     /** Line mode preview loop: samples depth at screen center, updates live distance */
     private val linePreviewRunnable = object : Runnable {
         override fun run() {

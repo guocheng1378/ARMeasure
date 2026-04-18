@@ -387,6 +387,7 @@ object MeasurementEngine {
         viewW: Float, viewH: Float,
         intrinsics: FloatArray, imgW: Int, imgH: Int
     ): Pair<Float, Float> {
+        if (wz <= 0.1f) return Pair(viewW / 2f, viewH / 2f) // behind camera → center
         val fx = intrinsics[0]; val fy = intrinsics[1]
         val cx = intrinsics[2]; val cy = intrinsics[3]
         val px = wx * fx / wz + cx

@@ -22,7 +22,7 @@ class MeasureOverlayView @JvmOverloads constructor(
     var sweepDistanceCm: Float = -1f
     var sweepHistory: List<Pair<Float, Float>> = emptyList()
     var lineDistanceLabels: List<String> = emptyList()
-    var placingSecondPoint: Boolean = false
+    @Volatile var placingSecondPoint: Boolean = false
     var liveCrosshair: PointF? = null
     /** Live distance preview between first point and current cursor (cm). -1 = no data. */
     var liveDistanceCm: Float = -1f

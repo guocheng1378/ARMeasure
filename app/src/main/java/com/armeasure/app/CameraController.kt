@@ -38,16 +38,16 @@ class CameraController(
     var depthReader: ImageReader? = null
         private set
 
-    var rgbSensorActiveArray: Rect? = null
+    @Volatile var rgbSensorActiveArray: Rect? = null
         private set
-    var depthSensorActiveArray: Rect? = null
+    @Volatile var depthSensorActiveArray: Rect? = null
         private set
-    var sensorSize: SizeF? = null
+    @Volatile var sensorSize: SizeF? = null
         private set
-    var focalLengthMm: Float = 0f
+    @Volatile var focalLengthMm: Float = 0f
         private set
     /** Camera intrinsic calibration: [fx, fy, cx, cy, skew] or null if unavailable */
-    var intrinsicCalibration: FloatArray? = null
+    @Volatile var intrinsicCalibration: FloatArray? = null
         private set
     var hasDepthMap: Boolean = false
         private set
