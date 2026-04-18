@@ -480,7 +480,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
                     binding.overlayView.lineDistanceLabels = listOf(displayText)
                     updateOverlay(); firstPoint = null
-                    binding.overlayView.animateLineExpand()  \/\/ #1: expand animation
+                    binding.overlayView.animateLineExpand()  // #1: expand animation
                     saveToHistory(measuredResult, "两点")
                 }
             }

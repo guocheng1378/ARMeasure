@@ -219,7 +219,10 @@ class MeasureOverlayView @JvmOverloads constructor(
         if (scaleDetector.isInProgress) return true
         when (event.action) {
             MotionEvent.ACTION_DOWN -> { if (sweepMode) onSweepMove?.invoke(event.x, event.y) else onTap?.invoke(event.x, event.y); return true }
-            MotionEvent.ACTION_MOVE -> { if (sweepMode) { onSweepMove?.invoke(event.x, event.y); return true } onMove?.invoke(event.x, event.y); return true }
+            MotionEvent.ACTION_MOVE -> {
+                if (sweepMode) { onSweepMove?.invoke(event.x, event.y); return true }
+                onMove?.invoke(event.x, event.y); return true
+            }
         }
         return super.onTouchEvent(event)
     }
