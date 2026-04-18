@@ -84,9 +84,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         return samples[samples.size / 2] // median
     }
 
-    /** Line mode preview loop: samples depth at screen center, updates live distance */
-    /** EMA-smoothed preview distance (reset on each new preview session) */
-    private var     /** Simple preview loop: reads depth at first point + screen center, shows live distance */
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
     private val sweepLock = Any()
