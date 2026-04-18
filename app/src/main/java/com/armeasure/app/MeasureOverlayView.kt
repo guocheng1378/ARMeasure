@@ -241,24 +241,30 @@ class MeasureOverlayView @JvmOverloads constructor(
 
         if (placingSecondPoint && points.size == 1) {
             val p0 = points[0]
-            // ★ Apple-like: line goes from first point to SCREEN CENTER (crosshair position)
             val cx = width / 2f; val cy = height / 2f
-            // Live preview line
+            // Live preview line (dashed)
             canvas.drawLine(p0.x, p0.y, cx, cy, previewP)
-            // Endpoint markers
-            drawEndpointMarker(canvas, p0.x, p0.y, true)
-            drawEndpointMarker(canvas, cx, cy, false)
+            // ★ First point: SOLID anchored marker (white filled dot + ring)
+            canvas.drawCircle(p0.x, p0.y, 6f, dotP)           // solid white center
+            canvas.drawCircle(p0.x, p0.y, 14f, endpointRingP) // inner ring
+            canvas.drawCircle(p0.x, p0.y, 20f, endpointRingOuterP) // outer ring
+            // ★ Screen center: LIGHT crosshair cursor (not a point — just an aim indicator)
+            val tick = 14f
+            crossP.alpha = 80
+            canvas.drawLine(cx - tick, cy, cx - 4, cy, crossP)
+            canvas.drawLine(cx + 4, cy, cx + tick, cy, crossP)
+            canvas.drawLine(cx, cy - tick, cx, cy - 4, crossP)
+            canvas.drawLine(cx, cy + 4, cx, cy + tick, crossP)
+            crossP.alpha = 255 // restore
+            canvas.drawCircle(cx, cy, 18f, crossP) // light ring, no fill
             // Live distance label at midpoint
             if (liveDistanceCm > 0) {
                 val mx = (p0.x + cx) / 2f; val my = (p0.y + cy) / 2f
                 drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
             }
-            // Per-point depth labels
+            // Depth label only on the anchored point
             if (firstPointDepthCm > 0) {
                 drawDepthLabel(canvas, String.format("%.0fcm", firstPointDepthCm), p0.x, p0.y, above = true)
-            }
-            if (secondPointDepthCm > 0) {
-                drawDepthLabel(canvas, String.format("%.0fcm", secondPointDepthCm), cx, cy, above = false)
             }
             // Level indicator
             if (deviceIsLevel) {
