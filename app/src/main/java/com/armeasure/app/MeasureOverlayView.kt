@@ -34,6 +34,8 @@ class MeasureOverlayView @JvmOverloads constructor(
     var deviceIsLevel: Boolean = false
     var surfaceDetected: Boolean = false
     var showTutorial: Boolean = false
+    /** Once true, the completed line is locked and ignores all updates */
+    var lineConfirmed: Boolean = false
 
     var onTap: ((Float, Float) -> Unit)? = null
     var onMove: ((Float, Float) -> Unit)? = null
@@ -212,6 +214,13 @@ class MeasureOverlayView @JvmOverloads constructor(
         if (showTutorial) { drawTutorial(canvas); return }
         if (sweepMode) { drawSweep(canvas); return }
 
+        // ★ Confirmed line: locked, skip all preview/live drawing
+        if (lineConfirmed) {
+            // Only draw the completed lines + endpoint markers + labels
+            drawCompletedMeasurement(canvas)
+            return
+        }
+
         if (areaPoints.size >= 2) {
             rPath.reset(); rPath.moveTo(areaPoints[0].x, areaPoints[0].y)
             for (i in 1 until areaPoints.size) rPath.lineTo(areaPoints[i].x, areaPoints[i].y)
@@ -308,6 +317,39 @@ class MeasureOverlayView @JvmOverloads constructor(
         }
 
         // First point marker is now drawn via drawEndpointMarker in the placingSecondPoint block above
+    }
+
+    /** Draw the locked/confirmed measurement line — no animation, no live updates. */
+    private fun drawCompletedMeasurement(canvas: Canvas) {
+        for (i in lines.indices) {
+            val (p1, p2) = lines[i]
+            // Solid thick line
+            canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineGlowP)
+            lineP.strokeWidth = 2.5f
+            canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineP)
+            lineP.strokeWidth = 1.8f // restore
+            // Extension ticks + arrows
+            drawExt(canvas, p1.x, p1.y, p2.x, p2.y)
+            drawArrow(canvas, p1.x, p1.y, p2.x, p2.y)
+            drawArrow(canvas, p2.x, p2.y, p1.x, p1.y)
+            // Endpoint markers (solid anchored)
+            drawEndpointMarker(canvas, p1.x, p1.y, true)
+            drawEndpointMarker(canvas, p2.x, p2.y, true)
+        }
+        // Distance label(s)
+        if (showLineLabels) {
+            for (i in lines.indices) {
+                if (i < lineDistanceLabels.size) {
+                    val (p1, p2) = lines[i]
+                    drawLabel(canvas, lineDistanceLabels[i], (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
+                }
+            }
+        }
+        // Draw anchored point dots
+        for (p in points) {
+            canvas.drawCircle(p.x, p.y, 4f, dotP)
+            canvas.drawCircle(p.x, p.y, 10f, dotRingP)
+        }
     }
 
     private fun drawExt(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float) {

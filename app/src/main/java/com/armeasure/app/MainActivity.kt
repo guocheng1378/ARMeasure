@@ -641,6 +641,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 binding.overlayView.firstPointDepthCm = -1f
                 binding.overlayView.secondPointDepthCm = -1f
                 binding.overlayView.deviceIsLevel = false
+                binding.overlayView.lineConfirmed = true
                 runOnUiThread {
                     binding.progressBar.visibility = android.view.View.GONE
                     measuredResult = formatDistance(dist)
@@ -777,6 +778,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.areaPoints = emptyList(); binding.overlayView.showLineLabels = false
         binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
         binding.overlayView.lineDistanceLabels = emptyList(); binding.overlayView.placingSecondPoint = false
+        binding.overlayView.lineConfirmed = false
         binding.overlayView.liveCrosshair = null; binding.overlayView.liveDistanceCm = -1f
         binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f
         binding.overlayView.deviceIsLevel = false
