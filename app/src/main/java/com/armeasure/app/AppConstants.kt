@@ -11,6 +11,7 @@ object AppConstants {
     const val DEPTH_MAX_RANGE_MM = 5000f
     const val DEPTH_PROCESS_NOISE = 200f
     const val DEPTH_INIT_MEASURE_NOISE = 200f
+    const val KALMAN_MIN_ERROR_COV_RATIO = 0.01f  // minErrorCov = processNoise * ratio
     const val DEPTH_SAMPLE_COUNT = 5
     const val DEPTH_SAMPLE_INTERVAL_MS = 80L
     const val DEPTH_CONVERGENCE_THRESHOLD_MM = 50f  // 早停阈值: 标准差<6mm时提前结束

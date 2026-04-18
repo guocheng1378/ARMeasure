@@ -8,6 +8,10 @@ import kotlin.math.sqrt
  */
 object HeightMeasureHelper {
 
+    private fun fastTan(theta: Double): Float {
+        return if (Math.abs(theta) < 0.26) theta.toFloat() else Math.tan(theta).toFloat()
+    }
+
     /**
      * Calculate true vertical height between two 3D points.
      * Uses camera intrinsic projection for accuracy.
@@ -37,8 +41,8 @@ object HeightMeasureHelper {
         val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
         val ny1 = ((0.5f - y1 / viewH) * 2f).toDouble().coerceIn(-clamp, clamp)
         val ny2 = ((0.5f - y2 / viewH) * 2f).toDouble().coerceIn(-clamp, clamp)
-        val py1 = d1 * Math.tan(ny1 * vfov / 2).toFloat()
-        val py2 = d2 * Math.tan(ny2 * vfov / 2).toFloat()
+        val py1 = d1 * fastTan(ny1 * vfov / 2)
+        val py2 = d2 * fastTan(ny2 * vfov / 2)
         return Math.abs(py2 - py1)
     }
 

@@ -104,6 +104,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     companion object {
         private const val TAG = "ARMeasure"
         private const val REQUEST_CAMERA = 100
+
+        // Precomputed bilateral depth-similarity LUT: exp(-x²/2σ²) for x in [0, 256]
+        // Avoids per-pixel Math.exp() in depth spatial filter
+        private val BILATERAL_LUT by lazy {
+            val sigma = AppConstants.DEPTH_BILATERAL_SIGMA_MM
+            val sigma2 = 2f * sigma * sigma
+            FloatArray(256) { i -> Math.exp(-(i * i).toDouble() / sigma2).toFloat() }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -603,6 +611,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     return@collectDepthSamples
                 }
 
+                // Depth consistency check: large d1/d2 ratio suggests occlusion or noise
+                val depthRatio = if (d1 > d2) d1 / d2 else d2 / d1
+                val consistencyPenalty = if (depthRatio > AppConstants.DEPTH_CONSISTENCY_MAX_RATIO) {
+                    hapticWarning()
+                    depthRatio // multiply uncertainty by ratio
+                } else 1f
+
                 val dist = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
                     MeasurementEngine.compute3DDistanceIntrinsic(p1Screen.x, p1Screen.y, p2Screen.x, p2Screen.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
                 } else {
@@ -619,7 +634,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     motion != null && motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
                     else -> 1f
                 }
-                val totalUnc = rawUnc * motionConfidence
+                val totalUnc = rawUnc * motionConfidence * consistencyPenalty
 
                 binding.overlayView.lineConfirmed = true
                 runOnUiThread {
@@ -674,48 +689,49 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.tvDistance.text = "采样中..."
             binding.progressBar.visibility = android.view.View.VISIBLE
             
-            // Collect depth at both points
-            collectDepthSamples(p1.x, p1.y) { result1 ->
-                val d1 = result1?.depthCm ?: 0f
-                if (d1 <= 0) {
-                    runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE }
-                    heightPoints.clear()
-                    return@collectDepthSamples
+            // Collect depth at both points IN PARALLEL
+            var r1: DepthResult? = null; var r2: DepthResult? = null
+            var doneCount = 0
+            val lock = Object()
+            
+            fun onOneDone() {
+                synchronized(lock) {
+                    doneCount++
+                    if (doneCount < 2) return
                 }
-                collectDepthSamples(p2.x, p2.y) { result2 ->
-                    val d2 = result2?.depthCm ?: 0f
-                    if (d2 <= 0) {
-                        runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE }
-                        heightPoints.clear()
-                        return@collectDepthSamples
-                    }
-                    
-                    val vw = cachedViewWidth; val vh = cachedViewHeight
-                    val intrinsics = cameraCtrl.intrinsicCalibration
-                    val arr = cameraCtrl.rgbSensorActiveArray
-                    val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
-                    
-                    val height = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                        HeightMeasureHelper.computeHeight(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, intrinsics, imgW, imgH)
-                    } else {
-                        HeightMeasureHelper.computeHeightFOV(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, getVfovDegrees())
-                    }
-                    
-                    runOnUiThread {
-                        binding.progressBar.visibility = android.view.View.GONE
-                        measuredResult = formatDistance(height)
-                        binding.tvDistance.text = "↕ $measuredResult"
-                        binding.overlayView.lines = listOf(Pair(PointF(p1.x, p1.y), PointF(p2.x, p2.y)))
-                        binding.overlayView.lineDistanceLabels = listOf(measuredResult)
-                        binding.overlayView.showLineLabels = true
-                        binding.overlayView.lineConfirmed = true
-                        binding.overlayView.animateLineExpand()
-                        hapticComplete()
-                        saveToHistory(measuredResult, "高度")
-                        heightPoints.clear()
-                    }
+                val d1 = r1?.depthCm ?: 0f; val d2 = r2?.depthCm ?: 0f
+                if (d1 <= 0 || d2 <= 0) {
+                    runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE; heightPoints.clear() }
+                    return
+                }
+                val vw = cachedViewWidth; val vh = cachedViewHeight
+                val intrinsics = cameraCtrl.intrinsicCalibration
+                val arr = cameraCtrl.rgbSensorActiveArray
+                val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+                
+                val height = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
+                    HeightMeasureHelper.computeHeight(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, intrinsics, imgW, imgH)
+                } else {
+                    HeightMeasureHelper.computeHeightFOV(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, getVfovDegrees())
+                }
+                
+                runOnUiThread {
+                    binding.progressBar.visibility = android.view.View.GONE
+                    measuredResult = formatDistance(height)
+                    binding.tvDistance.text = "↕ $measuredResult"
+                    binding.overlayView.lines = listOf(Pair(PointF(p1.x, p1.y), PointF(p2.x, p2.y)))
+                    binding.overlayView.lineDistanceLabels = listOf(measuredResult)
+                    binding.overlayView.showLineLabels = true
+                    binding.overlayView.lineConfirmed = true
+                    binding.overlayView.animateLineExpand()
+                    hapticComplete()
+                    saveToHistory(measuredResult, "高度")
+                    heightPoints.clear()
                 }
             }
+            
+            collectDepthSamples(p1.x, p1.y) { result -> r1 = result; onOneDone() }
+            collectDepthSamples(p2.x, p2.y) { result -> r2 = result; onOneDone() }
         }
     }
 
@@ -742,48 +758,59 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 binding.tvDistance.text = "计算角度..."
                 binding.progressBar.visibility = android.view.View.VISIBLE
                 
-                // Get depths for all 3 points
-                val localDepths = mutableListOf<Float>()
-                fun collectNext(idx: Int) {
-                    if (idx >= 3) {
-                        // Compute angle
-                        val vw = cachedViewWidth; val vh = cachedViewHeight
-                        val intrinsics = cameraCtrl.intrinsicCalibration
-                        val arr = cameraCtrl.rgbSensorActiveArray
-                        val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
-                        
-                        val angle = AngleMeasureHelper.computeAngleFromScreen(
-                            anglePoints[1].x, anglePoints[1].y, localDepths[1],
-                            anglePoints[0].x, anglePoints[0].y, localDepths[0],
-                            anglePoints[2].x, anglePoints[2].y, localDepths[2],
-                            vw, vh, intrinsics, imgW, imgH,
-                            getHfovDegrees(), getVfovDegrees()
-                        )
-                        
-                        runOnUiThread {
-                            binding.progressBar.visibility = android.view.View.GONE
-                            measuredResult = String.format("%.1f°", angle)
-                            binding.tvDistance.text = "∠ $measuredResult"
-                            binding.overlayView.lines = listOf(
-                                Pair(anglePoints[1], anglePoints[0]),
-                                Pair(anglePoints[1], anglePoints[2])
-                            )
-                            binding.overlayView.lineDistanceLabels = listOf(measuredResult)
-                            binding.overlayView.showLineLabels = true
-                            binding.overlayView.lineConfirmed = true
-                            binding.overlayView.animateLineExpand()
-                            hapticComplete()
-                            saveToHistory(measuredResult, "角度")
-                            anglePoints.clear()
-                        }
+                // Get depths for all 3 points IN PARALLEL
+                val results = arrayOfNulls<DepthResult?>(3)
+                var doneCount = 0
+                val lock = Object()
+                
+                fun onOneDone() {
+                    synchronized(lock) {
+                        doneCount++
+                        if (doneCount < 3) return
+                    }
+                    val localDepths = results.map { it?.depthCm ?: 0f }
+                    if (localDepths.any { it <= 0 }) {
+                        runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE; anglePoints.clear() }
                         return
                     }
-                    collectDepthSamples(anglePoints[idx].x, anglePoints[idx].y) { result ->
-                        localDepths.add(result?.depthCm ?: 0f)
-                        collectNext(idx + 1)
+                    val vw = cachedViewWidth; val vh = cachedViewHeight
+                    val intrinsics = cameraCtrl.intrinsicCalibration
+                    val arr = cameraCtrl.rgbSensorActiveArray
+                    val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+                    
+                    val angle = AngleMeasureHelper.computeAngleFromScreen(
+                        anglePoints[1].x, anglePoints[1].y, localDepths[1],
+                        anglePoints[0].x, anglePoints[0].y, localDepths[0],
+                        anglePoints[2].x, anglePoints[2].y, localDepths[2],
+                        vw, vh, intrinsics, imgW, imgH,
+                        getHfovDegrees(), getVfovDegrees()
+                    )
+                    
+                    runOnUiThread {
+                        binding.progressBar.visibility = android.view.View.GONE
+                        measuredResult = String.format("%.1f°", angle)
+                        binding.tvDistance.text = "∠ $measuredResult"
+                        binding.overlayView.lines = listOf(
+                            Pair(anglePoints[1], anglePoints[0]),
+                            Pair(anglePoints[1], anglePoints[2])
+                        )
+                        binding.overlayView.lineDistanceLabels = listOf(measuredResult)
+                        binding.overlayView.showLineLabels = true
+                        binding.overlayView.lineConfirmed = true
+                        binding.overlayView.animateLineExpand()
+                        hapticComplete()
+                        saveToHistory(measuredResult, "角度")
+                        anglePoints.clear()
                     }
                 }
-                collectNext(0)
+                
+                for (idx in 0 until 3) {
+                    val capturedIdx = idx
+                    collectDepthSamples(anglePoints[idx].x, anglePoints[idx].y) { result ->
+                        results[capturedIdx] = result
+                        onOneDone()
+                    }
+                }
             }
         }
     }
@@ -793,6 +820,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.areaPoints = emptyList()
         binding.overlayView.invalidate()
     }
+
+    private fun fastTan(theta: Double): Float = if (Math.abs(theta) < 0.26) theta.toFloat() else Math.tan(theta).toFloat()
 
     private fun computeArea(pts: List<PointF>, depthsCache: MutableMap<Int, Float>? = null): Float {
         if (pts.size < 3) return 0f
@@ -817,8 +846,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     } else {
                         val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
                         val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
-                        Triple(d!! * Math.tan(nx.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getHfovDegrees()) / 2).toFloat(),
-                               d * Math.tan(ny.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getVfovDegrees()) / 2).toFloat(), d)
+                        Triple(d!! * fastTan(nx.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getHfovDegrees()) / 2),
+                               d * fastTan(ny.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getVfovDegrees()) / 2), d)
                     }
                 }
                 return MeasurementEngine.computePolygonArea3D(pts3d)
@@ -1266,17 +1295,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             var wSum = 0.0; var wtSum = 0.0; var cnt = 0
             var neighborMin = Float.MAX_VALUE; var neighborMax = 0f
             // Bilateral filter: depth-aware spatial weighting
-            val depthSigma = AppConstants.DEPTH_BILATERAL_SIGMA_MM
-            val depthSigma2 = 2f * depthSigma * depthSigma
+            val depthSigma2 = 2f * AppConstants.DEPTH_BILATERAL_SIGMA_MM * AppConstants.DEPTH_BILATERAL_SIGMA_MM
             for (ddy in -radius..radius) for (ddx in -radius..radius) {
                 val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
                 val raw = buf[py*depthWidth+px].toInt() and 0x1FFF
                 if (raw in 1..8191) {
                     val spatialD2 = (ddx * ddx + ddy * ddy).toFloat()
                     val wSpatial = 1f / (1f + spatialD2)
-                    // Depth similarity weight: reject neighbors with very different depth (different surface)
-                    val depthDiff = (raw - centerRaw)
-                    val wDepth = Math.exp(-(depthDiff * depthDiff / depthSigma2).toDouble()).toFloat()
+                    // Depth similarity weight via precomputed LUT (avoids per-pixel exp)
+                    val depthDiff = Math.abs(raw - centerRaw.toInt())
+                    val wDepth = if (depthDiff < BILATERAL_LUT.size) BILATERAL_LUT[depthDiff] else 0f
                     val w = wSpatial * wDepth
                     wSum += raw * w; wtSum += w; cnt++
                     val rf = raw.toFloat()

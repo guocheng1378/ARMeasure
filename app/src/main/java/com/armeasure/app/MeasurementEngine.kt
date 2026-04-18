@@ -8,6 +8,11 @@ import kotlin.math.sqrt
  */
 object MeasurementEngine {
 
+    /** Small-angle optimization: tan(θ) ≈ θ when |θ| < 0.26 rad (~15°), error < 1% */
+    private fun fastTan(theta: Double): Float {
+        return if (Math.abs(theta) < 0.26) theta.toFloat() else Math.tan(theta).toFloat()
+    }
+
     /**
      * Rotate a 3D point (x, y, z) by pitch and roll angles (radians).
      * Used to compensate camera orientation change between two measurement points.
@@ -71,11 +76,11 @@ object MeasurementEngine {
         val ny1 = ((0.5f - y1 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
         val nx2 = ((x2 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
         val ny2 = ((0.5f - y2 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
-        val wx1 = d1 * Math.tan(nx1 * hfov / 2).toFloat()
-        val wy1 = d1 * Math.tan(ny1 * vfov / 2).toFloat()
+        val wx1 = d1 * fastTan(nx1 * hfov / 2)
+        val wy1 = d1 * fastTan(ny1 * vfov / 2)
         val wz1 = d1
-        val wx2 = d2 * Math.tan(nx2 * hfov / 2).toFloat()
-        val wy2 = d2 * Math.tan(ny2 * vfov / 2).toFloat()
+        val wx2 = d2 * fastTan(nx2 * hfov / 2)
+        val wy2 = d2 * fastTan(ny2 * vfov / 2)
         val wz2 = d2
         val (rx2, ry2, rz2) = rotatePoint(wx2, wy2, wz2, -deltaPitchRad, -deltaRollRad)
         return sqrt((wx1 - rx2) * (wx1 - rx2) + (wy1 - ry2) * (wy1 - ry2) + (wz1 - rz2) * (wz1 - rz2))
@@ -130,13 +135,14 @@ object MeasurementEngine {
 
         val hfov = Math.toRadians(hfovDeg)
         val vfov = Math.toRadians(vfovDeg)
+        val halfH = hfov / 2; val halfV = vfov / 2
 
         // #10: Clamp angle to avoid tan() blowup at screen edges
         val clampFactor = AppConstants.FOV_TAN_CLAMP.toDouble()
-        val px1 = d1 * Math.tan(nx1.toDouble().coerceIn(-clampFactor, clampFactor) * hfov / 2).toFloat()
-        val py1 = d1 * Math.tan(ny1.toDouble().coerceIn(-clampFactor, clampFactor) * vfov / 2).toFloat()
-        val px2 = d2 * Math.tan(nx2.toDouble().coerceIn(-clampFactor, clampFactor) * hfov / 2).toFloat()
-        val py2 = d2 * Math.tan(ny2.toDouble().coerceIn(-clampFactor, clampFactor) * vfov / 2).toFloat()
+        val px1 = d1 * fastTan(nx1.toDouble().coerceIn(-clampFactor, clampFactor) * halfH)
+        val py1 = d1 * fastTan(ny1.toDouble().coerceIn(-clampFactor, clampFactor) * halfV)
+        val px2 = d2 * fastTan(nx2.toDouble().coerceIn(-clampFactor, clampFactor) * halfH)
+        val py2 = d2 * fastTan(ny2.toDouble().coerceIn(-clampFactor, clampFactor) * halfV)
 
         val dx = px1 - px2
         val dy = py1 - py2
@@ -206,8 +212,8 @@ object MeasurementEngine {
         val ny1 = ((0.5f - y1 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
         val nx2 = ((x2 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
         val ny2 = ((0.5f - y2 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
-        val ta1 = Math.tan(nx1 * hfov / 2); val tb1 = Math.tan(ny1 * vfov / 2)
-        val ta2 = Math.tan(nx2 * hfov / 2); val tb2 = Math.tan(ny2 * vfov / 2)
+        val ta1 = fastTan(nx1 * hfov / 2).toDouble(); val tb1 = fastTan(ny1 * vfov / 2).toDouble()
+        val ta2 = fastTan(nx2 * hfov / 2).toDouble(); val tb2 = fastTan(ny2 * vfov / 2).toDouble()
         val A = 1.0 + ta1 * ta1 + tb1 * tb1
         val C = 1.0 + ta2 * ta2 + tb2 * tb2
         val B = 1.0 + ta1 * ta2 + tb1 * tb2
@@ -249,7 +255,10 @@ object MeasurementEngine {
             ny += (pts3d[i].third * pts3d[j].first - pts3d[j].third * pts3d[i].first)
             nz += (pts3d[i].first * pts3d[j].second - pts3d[j].first * pts3d[i].second)
         }
-        return (sqrt(nx * nx + ny * ny + nz * nz) / 2.0).toFloat()
+        val normLen = sqrt(nx * nx + ny * ny + nz * nz)
+        // Degenerate: all points collinear or coplanar with near-zero area
+        if (normLen < 1e-6) return 0f
+        return (normLen / 2.0).toFloat()
     }
 
     /**
@@ -301,11 +310,8 @@ object MeasurementEngine {
     }
 
     /**
-     * 鲁棒深度估计: MAD离群剔除 + 加权中位数。
-     * 改进:
-     * - 双重剔除: 第一轮粗筛(MAD×3), 第二轮精筛(MAD×2)
-     * - 加权中位数: 靠近中位数的样本权重更高
-     * - 最小方差保护: 避免浮点精度导致的误剔除
+     * 鲁棒深度估计: MAD离群剔除 + 中位数。
+     * 单轮剔除: MAD×threshold (默认2.0) 去除离群值。
      * @param samples raw depth samples in cm (must be > 0)
      * @param madThreshold number of MADs to consider as outlier (default 2.0)
      * @return robust median depth in cm, or null if too few valid samples
@@ -321,22 +327,11 @@ object MeasurementEngine {
         // 最小方差保护: 避免浮点精度导致的误剔除
         if (mad < AppConstants.ROBUST_MAD_MIN_THRESHOLD) return median
 
-        // 两轮剔除: 先粗筛(MAD×3)去极端值, 再精筛(MAD×2)
         val sigma = mad * 1.4826
-        val coarseThreshold = (3.0 * sigma).toFloat()
-        val coarseFiltered = valid.filter { Math.abs(it - median) <= coarseThreshold }
+        val threshold = (madThreshold * sigma).toFloat()
+        val filtered = valid.filter { Math.abs(it - median) <= threshold }
 
-        if (coarseFiltered.size < 2) return median
-
-        // 用粗筛后的数据重新计算中位数和MAD
-        val median2 = coarseFiltered.median()
-        val dev2 = coarseFiltered.map { Math.abs(it - median2) }.sorted()
-        val mad2 = dev2[dev2.size / 2]
-        val sigma2 = if (mad2 >= AppConstants.ROBUST_MAD_MIN_THRESHOLD) mad2 * 1.4826 else sigma
-        val fineThreshold = (madThreshold * sigma2).toFloat()
-        val filtered = coarseFiltered.filter { Math.abs(it - median2) <= fineThreshold }
-
-        return if (filtered.size >= 2) filtered.median() else median2
+        return if (filtered.size >= 2) filtered.median() else median
     }
 
     /**
@@ -385,8 +380,8 @@ object MeasurementEngine {
         val ny = ((0.5f - sy / viewH) * 2f).toDouble().coerceIn(-clamp, clamp)
         val hfov = Math.toRadians(hfovDeg); val vfov = Math.toRadians(vfovDeg)
         return Triple(
-            depthCm * Math.tan(nx * hfov / 2).toFloat(),
-            depthCm * Math.tan(ny * vfov / 2).toFloat(),
+            depthCm * fastTan(nx * hfov / 2),
+            depthCm * fastTan(ny * vfov / 2),
             depthCm
         )
     }
@@ -473,12 +468,18 @@ object MeasurementEngine {
                 if (inliers > bestInlierCount) { bestInlierCount = inliers; bestPlane = plane }
             }
         } else {
-            // Random sampling with pre-shuffled indices (no duplicates)
+            // Random sampling with rejection of degenerate triangles
             val rng = java.util.Random(42) // deterministic seed for reproducibility
             for (iter in 0 until ransacIterations) {
                 val i1 = rng.nextInt(n)
                 var i2 = rng.nextInt(n); while (i2 == i1) i2 = rng.nextInt(n)
                 var i3 = rng.nextInt(n); while (i3 == i1 || i3 == i2) i3 = rng.nextInt(n)
+                // Pre-check: skip if 3 points are nearly collinear
+                val (ax, ay, az) = pts3d[i1]; val (bx, by, bz) = pts3d[i2]; val (cx, cy, cz) = pts3d[i3]
+                val ux = bx - ax; val uy = by - ay; val uz = bz - az
+                val vx = cx - ax; val vy = cy - ay; val vz = cz - az
+                val crossX = uy * vz - uz * vy; val crossY = uz * vx - ux * vz; val crossZ = ux * vy - uy * vx
+                if (crossX * crossX + crossY * crossY + crossZ * crossZ < 1e-4) continue // degenerate
                 val (inliers, plane) = evaluatePlane(pts3d, i1, i2, i3, inlierThreshold)
                 if (inliers > bestInlierCount) { bestInlierCount = inliers; bestPlane = plane }
             }

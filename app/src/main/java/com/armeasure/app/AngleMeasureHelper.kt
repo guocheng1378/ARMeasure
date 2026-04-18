@@ -9,6 +9,10 @@ import kotlin.math.acos
  */
 object AngleMeasureHelper {
 
+    private fun fastTan(theta: Double): Float {
+        return if (Math.abs(theta) < 0.26) theta.toFloat() else Math.tan(theta).toFloat()
+    }
+
     /**
      * Compute angle at vertex (in degrees) from 3 points in 3D.
      */
@@ -44,6 +48,17 @@ object AngleMeasureHelper {
         intrinsics: FloatArray?, imgW: Int, imgH: Int,
         hfovDeg: Double, vfovDeg: Double
     ): Float {
+        // Minimum arm length check: angle is meaningless with very short arms
+        val armLen1 = MeasurementEngine.distance3D(
+            MeasurementEngine.screenTo3DFOV(vx, vy, vd, viewW, viewH, hfovDeg, vfovDeg),
+            MeasurementEngine.screenTo3DFOV(ax1, ay1, d1, viewW, viewH, hfovDeg, vfovDeg)
+        )
+        val armLen2 = MeasurementEngine.distance3D(
+            MeasurementEngine.screenTo3DFOV(vx, vy, vd, viewW, viewH, hfovDeg, vfovDeg),
+            MeasurementEngine.screenTo3DFOV(ax2, ay2, d2, viewW, viewH, hfovDeg, vfovDeg)
+        )
+        if (armLen1 < AppConstants.ANGLE_MIN_ARM_CM || armLen2 < AppConstants.ANGLE_MIN_ARM_CM) return 0f
+
         val vertex: Triple<Float, Float, Float>
         val arm1: Triple<Float, Float, Float>
         val arm2: Triple<Float, Float, Float>
@@ -60,7 +75,7 @@ object AngleMeasureHelper {
             fun to3D(sx: Float, sy: Float, d: Float): Triple<Float, Float, Float> {
                 val nx = ((sx / viewW - 0.5f) * 2f).toDouble().coerceIn(-clamp, clamp)
                 val ny = ((0.5f - sy / viewH) * 2f).toDouble().coerceIn(-clamp, clamp)
-                return Triple(d * Math.tan(nx * hfov / 2).toFloat(), d * Math.tan(ny * vfov / 2).toFloat(), d)
+                return Triple(d * fastTan(nx * hfov / 2), d * fastTan(ny * vfov / 2), d)
             }
             vertex = to3D(vx, vy, vd)
             arm1 = to3D(ax1, ay1, d1)

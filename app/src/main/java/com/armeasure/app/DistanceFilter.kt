@@ -23,6 +23,8 @@ class DistanceFilter(
     private var estimate = 0f
     private var errorCov = 1f
     private var kalmanInitialized = false
+    /** Minimum error covariance — prevents filter from becoming overconfident */
+    private val minErrorCov = processNoise * 0.01f
 
     private var lastRaw = -1f
     private var tickCount = 0
@@ -95,7 +97,7 @@ class DistanceFilter(
 
         val gain = predCov / (predCov + rAdaptive)
         estimate += gain * innovation
-        errorCov = (1f - gain) * predCov
+        errorCov = ((1f - gain) * predCov).coerceAtLeast(minErrorCov)
         return estimate
     }
 
