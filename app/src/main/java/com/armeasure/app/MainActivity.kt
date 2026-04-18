@@ -678,9 +678,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun setMode(mode: Mode) {
         // Clean up previous mode state before switching
         if (currentMode == Mode.LINE && mode != Mode.LINE) {
-                        firstPoint = null
-                                binding.overlayView.firstPointDepthCm = -1f
-            binding.overlayView.secondPointDepthCm = -1f
+            firstPoint = null
         }
         // Clean up stale overlay lines when entering any mode
         if (mode != currentMode) {

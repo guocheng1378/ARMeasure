@@ -22,14 +22,6 @@ class MeasureOverlayView @JvmOverloads constructor(
     var sweepDistanceCm: Float = -1f
     var sweepHistory: List<Pair<Float, Float>> = emptyList()
     var lineDistanceLabels: List<String> = emptyList()
-    var liveCrosshair: PointF? = null
-    /** Depth at first point (cm). Shown as small label near endpoint. */
-    var firstPointDepthCm: Float = -1f
-    /** Depth at second/live point (cm). */
-    var secondPointDepthCm: Float = -1f
-    /** Whether device is roughly level (tilt < threshold). */
-    var deviceIsLevel: Boolean = false
-    var surfaceDetected: Boolean = false
     var showTutorial: Boolean = false
     /** Once true, the completed line is locked and ignores all updates */
     var lineConfirmed: Boolean = false
