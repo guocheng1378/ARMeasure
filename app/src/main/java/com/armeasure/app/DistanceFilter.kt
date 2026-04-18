@@ -47,7 +47,13 @@ class DistanceFilter(
         if (count < 2) return applyKalman(rawMm)
 
         for (i in 0 until count) sortBuffer[i] = medianBuffer[i]
-        sortBuffer.sort(0, count)
+        // Insert sort: O(n) for small n, better cache behavior than TimSort
+        for (i in 1 until count) {
+            val key = sortBuffer[i]
+            var j = i - 1
+            while (j >= 0 && sortBuffer[j] > key) { sortBuffer[j + 1] = sortBuffer[j]; j-- }
+            sortBuffer[j + 1] = key
+        }
         return applyKalman(sortBuffer[count / 2])
     }
 

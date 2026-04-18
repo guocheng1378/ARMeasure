@@ -59,14 +59,19 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         return if (c > 0.5f) depthCm * c else depthCm
     }
 
-    fun getCorrectionFactor(sx: Float, sy: Float, vw: Float, vh: Float): Float {
+    fun getCorrectionFactor(sx: Float, sy: Float, vw: Float, vh: Float, depthCm: Float = 0f): Float {
         val c = cos(tiltAngle.toDouble()).toFloat()
         if (c <= 0.5f) return 1f
         val nx = (sx / vw - 0.5f) * 2f
         val ny = (0.5f - sy / vh) * 2f
         val pc = ny * sin(pitch.toDouble()).toFloat() * 0.3f
         val rc = nx * sin(roll.toDouble()).toFloat() * 0.3f
-        return (c + pc + rc).coerceIn(0.3f, 1.2f)
+        // Optimization #5: edge pixels at long range amplify error → reduce confidence
+        val edgePenalty = if (depthCm > 200f) {
+            val distFromCenter = sqrt((nx * nx + ny * ny).toDouble()).toFloat()
+            (1f - distFromCenter * 0.15f).coerceAtLeast(0.5f)
+        } else 1f
+        return ((c + pc + rc) * edgePenalty).coerceIn(0.3f, 1.2f)
     }
 
     // ── Motion detection API ──
@@ -193,8 +198,15 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         gyroPitch += gyroY * dt
         val ap = atan2(-accelX.toDouble(), sqrt((accelY * accelY + accelZ * accelZ).toDouble())).toFloat()
         val ar = atan2(accelY.toDouble(), accelZ.toDouble()).toFloat()
-        pitch = alpha * gyroPitch + (1f - alpha) * ap
-        roll = alpha * gyroRoll + (1f - alpha) * ar
+        // Optimization #4: adaptive alpha — high motion → trust accel more, static → trust gyro more
+        val accelMag = sqrt((accelX * accelX + accelY * accelY + accelZ * accelZ).toDouble())
+        val dynamicAlpha = when {
+            accelMag > 12.0 -> 0.90f   // high motion
+            accelMag < 8.5  -> 0.99f   // near-static (gravity only)
+            else -> 0.98f
+        }
+        pitch = dynamicAlpha * gyroPitch + (1f - dynamicAlpha) * ap
+        roll = dynamicAlpha * gyroRoll + (1f - dynamicAlpha) * ar
         gyroPitch = pitch; gyroRoll = roll
     }
 

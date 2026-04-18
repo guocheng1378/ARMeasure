@@ -204,7 +204,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
         if (raw != null && raw > 0 && imuHelper.isAvailable()) {
             val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
-            return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh) else imuHelper.compensateDepth(raw)
+            return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh, raw) else imuHelper.compensateDepth(raw)
         }
         return raw
     }
@@ -217,9 +217,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
      * Returns both the robust depth and the sample standard deviation as uncertainty.
      */
     private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = 5, intervalMs: Long = 80): DepthResult? {
+        // Fix #1: use local filter per collection to avoid Kalman state contamination
+        val localFilter = DistanceFilter(windowSize = 5, alpha = 0.4f, maxJumpMm = 2000f, maxRangeMm = 5000f, processNoise = 300f, initMeasureNoise = 300f)
         val samples = mutableListOf<Float>()
         for (i in 0 until sampleCount) {
-            val d = getDistanceAt(sx, sy)
+            val d = getDistanceAt(sx, sy, localFilter)
             if (d != null && d > 0) samples.add(d)
             if (i < sampleCount - 1) Thread.sleep(intervalMs)
         }
@@ -415,8 +417,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     }
                     else -> 1f
                 }
+                // Fix #2: apply motion correction to BOTH d1 and d2
+                val d1Corr = d1 * motionFactor
                 val result2 = collectDepthSamples(x, y)
-                val d2 = (result2?.depthCm ?: d1) * motionFactor
+                val d2 = (result2?.depthCm ?: d1Corr) * motionFactor
                 val u2 = result2?.uncertaintyCm ?: 0f
                 val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
                 // Use intrinsic calibration if available (more accurate than FOV)
@@ -425,9 +429,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     val arr = cameraCtrl.rgbSensorActiveArray
                     val imgW = arr?.width() ?: vw.toInt()
                     val imgH = arr?.height() ?: vh.toInt()
-                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1Corr, d2, vw, vh, intrinsics, imgW, imgH)
                 } else {
-                    MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1Corr, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
                 // Combined uncertainty: sqrt(u1² + u2²)
                 val totalUnc = sqrt(u1 * u1 + u2 * u2)
