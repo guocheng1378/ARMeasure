@@ -543,6 +543,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun handleLineTap(x: Float, y: Float) {
         if (firstPoint == null) {
             // ── First point: tap to anchor ──
+            // Clear previous measurement state to prevent stale drawing
+            binding.overlayView.lines = emptyList()
+            binding.overlayView.lineDistanceLabels = emptyList()
+            binding.overlayView.showLineLabels = false
+            binding.overlayView.lineConfirmed = false
+            binding.overlayView.lineExpandProgress = 1f
             firstPoint = PointF(x, y)
             overlayPoints.clear(); overlayPoints.add(PointF(x, y))
             binding.overlayView.placingSecondPoint = true
@@ -728,6 +734,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.overlayView.liveDistanceCm = -1f
             binding.overlayView.firstPointDepthCm = -1f
             binding.overlayView.secondPointDepthCm = -1f
+        }
+        // Clean up stale overlay lines when entering any mode
+        if (mode != currentMode) {
+            binding.overlayView.lines = emptyList()
+            binding.overlayView.lineDistanceLabels = emptyList()
+            binding.overlayView.showLineLabels = false
+            binding.overlayView.lineConfirmed = false
+            binding.overlayView.lineExpandProgress = 1f
         }
         currentMode = mode; calibrating = false
         binding.tvMode.text = when (mode) {

@@ -327,34 +327,51 @@ class MeasureOverlayView @JvmOverloads constructor(
 
     /** Draw the locked/confirmed measurement line — no animation, no live updates. */
     private fun drawCompletedMeasurement(canvas: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat()
         for (i in lines.indices) {
-            val (p1, p2) = lines[i]
+            // Clamp all coordinates to screen bounds
+            val (rp1, rp2) = lines[i]
+            val p1x = rp1.x.coerceIn(0f, w); val p1y = rp1.y.coerceIn(0f, h)
+            val p2x = rp2.x.coerceIn(0f, w); val p2y = rp2.y.coerceIn(0f, h)
+            // Animated expansion from midpoint
+            val mx = (p1x + p2x) / 2f; val my = (p1y + p2y) / 2f
+            val ax1 = mx + (p1x - mx) * lineExpandProgress
+            val ay1 = my + (p1y - my) * lineExpandProgress
+            val ax2 = mx + (p2x - mx) * lineExpandProgress
+            val ay2 = my + (p2y - my) * lineExpandProgress
             // Solid thick line
-            canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineGlowP)
+            canvas.drawLine(ax1, ay1, ax2, ay2, lineGlowP)
             lineP.strokeWidth = 2.5f
-            canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineP)
+            canvas.drawLine(ax1, ay1, ax2, ay2, lineP)
             lineP.strokeWidth = 1.8f // restore
             // Extension ticks + arrows
-            drawExt(canvas, p1.x, p1.y, p2.x, p2.y)
-            drawArrow(canvas, p1.x, p1.y, p2.x, p2.y)
-            drawArrow(canvas, p2.x, p2.y, p1.x, p1.y)
-            // Endpoint markers (solid anchored)
-            drawEndpointMarker(canvas, p1.x, p1.y, true)
-            drawEndpointMarker(canvas, p2.x, p2.y, true)
+            if (lineExpandProgress > 0.3f) {
+                drawExt(canvas, ax1, ay1, ax2, ay2)
+                drawArrow(canvas, ax1, ay1, ax2, ay2)
+                drawArrow(canvas, ax2, ay2, ax1, ay1)
+                // Apple-style endpoint markers on completed line
+                if (lineExpandProgress > 0.8f) {
+                    drawEndpointMarker(canvas, ax1, ay1, true)
+                    drawEndpointMarker(canvas, ax2, ay2, true)
+                }
+            }
         }
         // Distance label(s)
-        if (showLineLabels) {
+        if (showLineLabels && lineExpandProgress > 0.6f) {
             for (i in lines.indices) {
                 if (i < lineDistanceLabels.size) {
-                    val (p1, p2) = lines[i]
-                    drawLabel(canvas, lineDistanceLabels[i], (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
+                    val (rp1, rp2) = lines[i]
+                    val mx = ((rp1.x + rp2.x) / 2f).coerceIn(50f, width - 50f)
+                    val my = ((rp1.y + rp2.y) / 2f).coerceIn(50f, height - 50f)
+                    drawLabel(canvas, lineDistanceLabels[i], mx, my)
                 }
             }
         }
         // Draw anchored point dots
-        for (p in points) {
-            canvas.drawCircle(p.x, p.y, 4f, dotP)
-            canvas.drawCircle(p.x, p.y, 10f, dotRingP)
+        for (rp in points) {
+            val px = rp.x.coerceIn(0f, w); val py = rp.y.coerceIn(0f, h)
+            canvas.drawCircle(px, py, 4f, dotP)
+            canvas.drawCircle(px, py, 10f, dotRingP)
         }
     }
 
