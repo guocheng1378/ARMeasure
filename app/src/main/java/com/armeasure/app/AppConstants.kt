@@ -15,9 +15,10 @@ object AppConstants {
     const val DEPTH_SAMPLE_INTERVAL_MS = 80L
 
     // ── Depth temporal smoothing (multi-frame median) ──
-    const val TEMPORAL_FRAME_COUNT = 3    // keep last N depth frames for median
+    const val TEMPORAL_FRAME_COUNT = 5    // keep last N depth frames for median
     const val DEPTH_EDGE_VARIANCE_THRESHOLD = 800f  // mm² — neighbor variance at depth edges
     const val DEPTH_EDGE_CONFIDENCE_MIN = 0.3f      // min confidence at object boundaries
+    const val DEPTH_BILATERAL_SIGMA_MM = 200f       // depth similarity sigma for bilateral filter (mm)
 
     // ── Depth fusion variances (cm²) ──
     const val TOF_VARIANCE = 25f           // 5cm σ

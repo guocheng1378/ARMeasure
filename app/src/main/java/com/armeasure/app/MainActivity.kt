@@ -937,12 +937,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
             var wSum = 0.0; var wtSum = 0.0; var cnt = 0
             var neighborMin = Float.MAX_VALUE; var neighborMax = 0f
+            // Bilateral filter: depth-aware spatial weighting
+            val depthSigma = AppConstants.DEPTH_BILATERAL_SIGMA_MM
+            val depthSigma2 = 2f * depthSigma * depthSigma
             for (ddy in -radius..radius) for (ddx in -radius..radius) {
                 val px = (dx+ddx).coerceIn(0, depthWidth-1); val py = (dy+ddy).coerceIn(0, depthHeight-1)
                 val raw = buf[py*depthWidth+px].toInt() and 0xFFFF
                 if (raw in 1..65533) {
-                    val d2 = (ddx * ddx + ddy * ddy).toFloat()
-                    val w = 1f / (1f + d2)
+                    val spatialD2 = (ddx * ddx + ddy * ddy).toFloat()
+                    val wSpatial = 1f / (1f + spatialD2)
+                    // Depth similarity weight: reject neighbors with very different depth (different surface)
+                    val depthDiff = (raw - centerRaw)
+                    val wDepth = Math.exp(-(depthDiff * depthDiff / depthSigma2).toDouble()).toFloat()
+                    val w = wSpatial * wDepth
                     wSum += raw * w; wtSum += w; cnt++
                     val rf = raw.toFloat()
                     if (rf < neighborMin) neighborMin = rf
