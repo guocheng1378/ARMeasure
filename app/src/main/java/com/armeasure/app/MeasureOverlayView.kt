@@ -250,51 +250,30 @@ class MeasureOverlayView @JvmOverloads constructor(
         }
 
         if (placingSecondPoint && points.size == 1) {
-            val p0 = points[0]
+            val p0 = points[0]  // first anchor point (screen center at tap time)
             val cx = width / 2f; val cy = height / 2f
 
-            // ── Preview line: connects first point to center crosshair ──
-            // Use same line style as confirmed measurement but thinner
+            // ── Preview line: first anchor → current center ──
             canvas.drawLine(p0.x, p0.y, cx, cy, previewP)
 
-            // ── First point: DIMMED anchor (起点) — not the active target ──
-            // Smaller, faded, with "起点" label to show it's a reference, not interactive
-            dotRingP.alpha = 100
-            canvas.drawCircle(p0.x, p0.y, 4f, dotRingP)
-            canvas.drawCircle(p0.x, p0.y, 12f, dotRingP)
-            dotRingP.alpha = 255 // restore
-            val depthLabel = if (firstPointDepthCm > 0) "起点 ${String.format("%.0fcm", firstPointDepthCm)}" else "起点"
-            drawDepthLabel(canvas, depthLabel, p0.x, p0.y, above = true)
+            // ── First anchor: small static dot ──
+            canvas.drawCircle(p0.x, p0.y, 5f, dotP)
 
-            // ── Center crosshair: LARGE, BRIGHT aim target — this is what you move ──
-            val tick = 22f // bigger than before (was 14)
-            crossP.color = Color.WHITE
-            crossP.alpha = 220
-            crossP.strokeWidth = 2.5f
-            // Crosshair lines with gap in center
+            // ── Center crosshair: the aim target (same as idle state, but brighter) ──
+            val tick = AppConstants.CROSSHAIR_SIZE
+            crossP.alpha = 255
+            crossP.strokeWidth = 2f
             canvas.drawLine(cx - tick, cy, cx - 5, cy, crossP)
             canvas.drawLine(cx + 5, cy, cx + tick, cy, crossP)
             canvas.drawLine(cx, cy - tick, cx, cy - 5, crossP)
             canvas.drawLine(cx, cy + 5, cx, cy + tick, crossP)
-            // Outer ring (thick, bright)
-            canvas.drawCircle(cx, cy, 24f, crossP)
-            // Inner dot
-            dotP.color = Color.WHITE
             canvas.drawCircle(cx, cy, 3f, dotP)
-            crossP.alpha = 255; crossP.strokeWidth = 1.5f // restore
+            crossP.alpha = 255; crossP.strokeWidth = 1.5f
 
-            // "确认" button hint below crosshair
-            drawLabel(canvas, "点击此处确认", cx, cy + 40f)
-
-            // Live distance on the preview line
+            // ── Live distance on preview line ──
             if (liveDistanceCm > 0) {
                 val mx = (p0.x + cx) / 2f; val my = (p0.y + cy) / 2f
                 drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
-            }
-
-            // Level indicator
-            if (deviceIsLevel) {
-                drawLevelBadge(canvas)
             }
         }
 

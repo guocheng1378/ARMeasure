@@ -542,37 +542,47 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handleLineTap(x: Float, y: Float) {
         if (firstPoint == null) {
-            // ── First point: tap to anchor ──
-            // Clear previous measurement state to prevent stale drawing
+            // ── First point: anchor at SCREEN CENTER (where crosshair is) ──
             binding.overlayView.lines = emptyList()
             binding.overlayView.lineDistanceLabels = emptyList()
             binding.overlayView.showLineLabels = false
             binding.overlayView.lineConfirmed = false
             binding.overlayView.lineExpandProgress = 1f
-            firstPoint = PointF(x, y)
-            overlayPoints.clear(); overlayPoints.add(PointF(x, y))
+
+            val vw = cachedViewWidth.takeIf { it > 0 } ?: binding.surfaceView.width.toFloat()
+            val vh = cachedViewHeight.takeIf { it > 0 } ?: binding.surfaceView.height.toFloat()
+            val cx = vw / 2f; val cy = vh / 2f
+
+            firstPoint = PointF(cx, cy)  // ★ anchor at center, NOT finger position
+            overlayPoints.clear(); overlayPoints.add(PointF(cx, cy))
             binding.overlayView.placingSecondPoint = true
-            binding.overlayView.triggerPulse(x, y)
+            binding.overlayView.triggerPulse(cx, cy)
             binding.tvDistance.text = "采样中(1/2)..."
-            updateOverlay()
+            haptic()
             if (imuHelper.isAvailable()) imuHelper.markPoint()
-            collectDepthSamples(x, y, onProgress = { cur, total ->
+            collectDepthSamples(cx, cy, onProgress = { cur, total ->
                 runOnUiThread { binding.tvDistance.text = "采样中(1/2) $cur/$total..." }
             }) { result ->
                 firstDistance = result?.depthCm ?: 0f
                 firstUncertainty = result?.uncertaintyCm ?: 0f
                 runOnUiThread {
                     binding.overlayView.firstPointDepthCm = firstDistance
-                    binding.tvDistance.text = "移动手机瞄准 → 点击 ⊕ 确认"
+                    binding.tvDistance.text = "移动手机瞄准第二点 → 点击确认"
                 }
                 previewDistEma = Float.NaN
                 backgroundHandler?.post(linePreviewRunnable)
             }
         } else {
-            // ── Second point: CONFIRM at screen center ──
+            // ── Second point: also at SCREEN CENTER ──
             backgroundHandler?.removeCallbacks(linePreviewRunnable)
             binding.overlayView.placingSecondPoint = false
-            binding.overlayView.triggerPulse(x, y)
+
+            val vw = cachedViewWidth.takeIf { it > 0 } ?: binding.surfaceView.width.toFloat()
+            val vh = cachedViewHeight.takeIf { it > 0 } ?: binding.surfaceView.height.toFloat()
+            val cx = vw / 2f; val cy = vh / 2f
+
+            binding.overlayView.triggerPulse(cx, cy)
+            haptic()
             val imuAvail = imuHelper.isAvailable()
             val motion = if (imuAvail) imuHelper.checkMotionSince() else null
             if (imuAvail) imuHelper.markPoint()
@@ -580,17 +590,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             if (motionWarn != null) hapticWarning()
 
             val p1 = firstPoint!!
-            // Safety: use surfaceView dimensions if cached values are 0
-            val vw = cachedViewWidth.takeIf { it > 0 } ?: binding.surfaceView.width.toFloat()
-            val vh = cachedViewHeight.takeIf { it > 0 } ?: binding.surfaceView.height.toFloat()
-            val cx = vw / 2f; val cy = vh / 2f
             binding.tvDistance.text = "确认中..."
 
-            // Final: re-sample depth at BOTH positions
             collectDepthSamples(cx, cy, onProgress = { _, _ -> }) { result2 ->
                 val d2 = result2?.depthCm ?: 0f
-
-                // Also re-sample first point depth at confirmation time
                 val d1 = getRawDepthAt(p1.x, p1.y) ?: firstDistance
 
                 val intrinsics = cameraCtrl.intrinsicCalibration
@@ -624,7 +627,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 binding.overlayView.firstPointDepthCm = -1f
                 binding.overlayView.secondPointDepthCm = -1f
                 binding.overlayView.deviceIsLevel = false
-                binding.overlayView.confirmFlash = false
                 binding.overlayView.lineConfirmed = true
                 runOnUiThread {
                     binding.progressBar.visibility = android.view.View.GONE
@@ -632,7 +634,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
                     val displayText = listOfNotNull(measuredResult + uncStr, motionWarn).joinToString("  ")
                     binding.tvDistance.text = displayText
-                    binding.overlayView.lines = listOf(Pair(p1Screen, p2Screen)); binding.overlayView.showLineLabels = true
+                    binding.overlayView.lines = listOf(Pair(p1Screen, p2Screen))
+                    binding.overlayView.showLineLabels = true
                     binding.overlayView.lineDistanceLabels = listOf(displayText)
                     overlayPoints.clear(); overlayPoints.add(p1Screen); overlayPoints.add(p2Screen)
                     updateOverlay(); firstPoint = null
