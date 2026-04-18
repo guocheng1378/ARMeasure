@@ -198,7 +198,7 @@
                         android:layout_width="24dp"
                         android:layout_height="24dp"
                         android:src="@android:drawable/ic_menu_mylocation"
-                        android:tint="@color/text_primary"
+                        app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_point" />
 
                     <TextView
@@ -226,7 +226,7 @@
                         android:layout_width="24dp"
                         android:layout_height="24dp"
                         android:src="@android:drawable/ic_menu_edit"
-                        android:tint="@color/text_primary"
+                        app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_line" />
 
                     <TextView
@@ -254,7 +254,7 @@
                         android:layout_width="24dp"
                         android:layout_height="24dp"
                         android:src="@android:drawable/ic_menu_crop"
-                        android:tint="@color/text_primary"
+                        app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_area" />
 
                     <TextView
@@ -282,7 +282,7 @@
                         android:layout_width="24dp"
                         android:layout_height="24dp"
                         android:src="@android:drawable/ic_menu_rotate"
-                        android:tint="@color/text_primary"
+                        app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_sweep" />
 
                     <TextView
@@ -310,7 +310,7 @@
                         android:layout_width="24dp"
                         android:layout_height="24dp"
                         android:src="@android:drawable/ic_menu_upload"
-                        android:tint="@color/text_primary"
+                        app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_height" />
 
                     <TextView
@@ -338,7 +338,7 @@
                         android:layout_width="24dp"
                         android:layout_height="24dp"
                         android:src="@android:drawable/ic_menu_compass"
-                        android:tint="@color/text_primary"
+                        app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_angle" />
 
                     <TextView
@@ -366,7 +366,7 @@
                         android:layout_width="24dp"
                         android:layout_height="24dp"
                         android:src="@android:drawable/ic_menu_sort_by_size"
-                        android:tint="@color/text_primary"
+                        app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_level" />
 
                     <TextView
