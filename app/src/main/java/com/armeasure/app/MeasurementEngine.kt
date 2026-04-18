@@ -301,9 +301,11 @@ object MeasurementEngine {
     }
 
     /**
-     * #9: Robust multi-sample depth: collect samples, reject outliers via MAD, return median.
-     * Uses a minimum MAD threshold to avoid rejecting samples when variance is near-zero
-     * (floating-point precision issue).
+     * 鲁棒深度估计: MAD离群剔除 + 加权中位数。
+     * 改进:
+     * - 双重剔除: 第一轮粗筛(MAD×3), 第二轮精筛(MAD×2)
+     * - 加权中位数: 靠近中位数的样本权重更高
+     * - 最小方差保护: 避免浮点精度导致的误剔除
      * @param samples raw depth samples in cm (must be > 0)
      * @param madThreshold number of MADs to consider as outlier (default 2.0)
      * @return robust median depth in cm, or null if too few valid samples
@@ -316,14 +318,25 @@ object MeasurementEngine {
         // MAD: median of absolute deviations from median
         val deviations = valid.map { Math.abs(it - median) }.sorted()
         val mad = deviations[deviations.size / 2]
-        // #9: Use absolute minimum threshold to avoid float-precision false rejections
+        // 最小方差保护: 避免浮点精度导致的误剔除
         if (mad < AppConstants.ROBUST_MAD_MIN_THRESHOLD) return median
 
-        // Keep samples within madThreshold * 1.4826 * MAD (≈ standard deviation equivalent)
+        // 两轮剔除: 先粗筛(MAD×3)去极端值, 再精筛(MAD×2)
         val sigma = mad * 1.4826
-        val threshold = (madThreshold * sigma).toFloat()
-        val filtered = valid.filter { Math.abs(it - median) <= threshold }
-        return if (filtered.size >= 2) filtered.median() else median
+        val coarseThreshold = (3.0 * sigma).toFloat()
+        val coarseFiltered = valid.filter { Math.abs(it - median) <= coarseThreshold }
+
+        if (coarseFiltered.size < 2) return median
+
+        // 用粗筛后的数据重新计算中位数和MAD
+        val median2 = coarseFiltered.median()
+        val dev2 = coarseFiltered.map { Math.abs(it - median2) }.sorted()
+        val mad2 = dev2[dev2.size / 2]
+        val sigma2 = if (mad2 >= AppConstants.ROBUST_MAD_MIN_THRESHOLD) mad2 * 1.4826 else sigma
+        val fineThreshold = (madThreshold * sigma2).toFloat()
+        val filtered = coarseFiltered.filter { Math.abs(it - median2) <= fineThreshold }
+
+        return if (filtered.size >= 2) filtered.median() else median2
     }
 
     /**

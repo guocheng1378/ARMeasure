@@ -52,23 +52,34 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         const val ROTATION_NOISE_FLOOR_DEG = AppConstants.ROTATION_NOISE_FLOOR_DEG
     }
 
+    /**
+     * 倾斜补偿: 深度传感器测量的是沿传感器轴线的距离，
+     * 当设备倾斜时，实际垂直距离 = 测量值 × cos(tilt)
+     * 但水平偏移也要考虑: 实际距离 = sqrt(depth² - 垂直偏移²)
+     * 简化为: depth * cos(tilt)，当倾斜<60°时安全
+     */
     fun compensateDepth(depthCm: Float): Float {
         if (depthCm <= 0) return depthCm
         val c = cos(tiltAngle.toDouble()).toFloat()
-        return if (c > 0.5f) depthCm * c else depthCm
+        return if (c > 0.5f) depthCm * c else depthCm * 0.5f // 倾斜过大时用保守估计
     }
 
+    /**
+     * 位置+倾斜修正因子: 考虑屏幕位置(pitch/roll偏移)和边缘惩罚。
+     * 返回值用于乘以原始深度: correctedDepth = rawDepth * factor
+     */
     fun getCorrectionFactor(sx: Float, sy: Float, vw: Float, vh: Float, depthCm: Float = 0f): Float {
         val c = cos(tiltAngle.toDouble()).toFloat()
         if (c <= 0.5f) return 1f
         val nx = (sx / vw - 0.5f) * 2f
         val ny = (0.5f - sy / vh) * 2f
+        // 倾斜引起的水平偏移修正
         val pc = ny * sin(pitch.toDouble()).toFloat() * 0.3f
         val rc = nx * sin(roll.toDouble()).toFloat() * 0.3f
-        // Optimization #5: edge pixels at long range amplify error → reduce confidence
-        val edgePenalty = if (depthCm > 200f) {
+        // 边缘像素: 远距离时角度误差放大 → 降低置信度
+        val edgePenalty = if (depthCm > 150f) {
             val distFromCenter = sqrt((nx * nx + ny * ny).toDouble()).toFloat()
-            (1f - distFromCenter * 0.15f).coerceAtLeast(0.5f)
+            (1f - distFromCenter * 0.2f).coerceAtLeast(0.4f)
         } else 1f
         return ((c + pc + rc) * edgePenalty).coerceIn(0.3f, 1.2f)
     }

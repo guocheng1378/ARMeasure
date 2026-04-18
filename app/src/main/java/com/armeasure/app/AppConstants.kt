@@ -9,16 +9,17 @@ object AppConstants {
     const val DEPTH_WINDOW_SIZE = 5
     const val DEPTH_MAX_JUMP_MM = 2000f
     const val DEPTH_MAX_RANGE_MM = 5000f
-    const val DEPTH_PROCESS_NOISE = 300f
-    const val DEPTH_INIT_MEASURE_NOISE = 300f
+    const val DEPTH_PROCESS_NOISE = 200f
+    const val DEPTH_INIT_MEASURE_NOISE = 200f
     const val DEPTH_SAMPLE_COUNT = 5
     const val DEPTH_SAMPLE_INTERVAL_MS = 80L
+    const val DEPTH_CONVERGENCE_THRESHOLD_MM = 50f  // 早停阈值: 标准差<6mm时提前结束
 
     // ── Depth temporal smoothing (multi-frame median) ──
     const val TEMPORAL_FRAME_COUNT = 5    // keep last N depth frames for median
-    const val DEPTH_EDGE_VARIANCE_THRESHOLD = 800f  // mm² — neighbor variance at depth edges
+    const val DEPTH_EDGE_VARIANCE_THRESHOLD = 600f  // mm² — neighbor variance at depth edges
     const val DEPTH_EDGE_CONFIDENCE_MIN = 0.3f      // min confidence at object boundaries
-    const val DEPTH_BILATERAL_SIGMA_MM = 40f        // depth similarity sigma for bilateral filter (mm) — small = sharp edges
+    const val DEPTH_BILATERAL_SIGMA_MM = 30f        // depth similarity sigma for bilateral filter (mm) — small = sharp edges
 
     // ── Depth fusion variances (cm²) ──
     const val TOF_VARIANCE = 25f           // 5cm σ

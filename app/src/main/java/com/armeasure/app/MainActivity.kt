@@ -353,29 +353,40 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             maxJumpMm = AppConstants.DEPTH_MAX_JUMP_MM, maxRangeMm = AppConstants.DEPTH_MAX_RANGE_MM,
             processNoise = AppConstants.DEPTH_PROCESS_NOISE, initMeasureNoise = AppConstants.DEPTH_INIT_MEASURE_NOISE
         )
-        // #7: Warm start from main filter for faster convergence
+        // Warm start from main filter for faster convergence
         localFilter.warmStartFrom(depthFilter)
         val samples = mutableListOf<Float>()
+        val minSamples = 3  // 最少采样次数
         var sampleIndex = 0
         fun nextSample() {
             if (sampleIndex >= sampleCount) {
-                val robust = MeasurementEngine.robustDepth(samples)
-                val unc = if (samples.size >= 2) {
-                    val mean = samples.average().toFloat()
-                    val variance = samples.sumOf { ((it - mean) * (it - mean)).toDouble() } / (samples.size - 1)
-                    sqrt(variance).toFloat()
-                } else 0f
-                onComplete(if (robust != null && robust > 0) DepthResult(robust, unc) else null)
+                finishSampling(samples, onComplete)
                 return
             }
             val d = getDistanceAt(sx, sy, localFilter, skipImu)
             if (d != null && d > 0) samples.add(d)
             sampleIndex++
             onProgress?.invoke(sampleIndex, sampleCount)
+
+            // 早停: 采够最少次数后，检查收敛
+            if (sampleIndex >= minSamples && localFilter.isConverged(AppConstants.DEPTH_CONVERGENCE_THRESHOLD_MM)) {
+                finishSampling(samples, onComplete)
+                return
+            }
             if (sampleIndex < sampleCount) backgroundHandler?.postDelayed({ nextSample() }, intervalMs)
             else nextSample()
         }
         nextSample()
+    }
+
+    private fun finishSampling(samples: MutableList<Float>, onComplete: (DepthResult?) -> Unit) {
+        val robust = MeasurementEngine.robustDepth(samples)
+        val unc = if (samples.size >= 2) {
+            val mean = samples.average().toFloat()
+            val variance = samples.sumOf { ((it - mean) * (it - mean)).toDouble() } / (samples.size - 1)
+            sqrt(variance).toFloat()
+        } else 0f
+        onComplete(if (robust != null && robust > 0) DepthResult(robust, unc) else null)
     }
 
     @Volatile private var cachedHfov: Double = Double.NaN

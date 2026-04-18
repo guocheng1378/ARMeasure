@@ -58,9 +58,10 @@ class DistanceFilter(
     }
 
     /**
-     * Fix #6: Adaptive Kalman with linear (not quadratic) innovation scaling.
-     * Uses |innovation| × constant instead of innovation² × constant to prevent
-     * Kalman gain collapse when switching to a new measurement target.
+     * 自适应卡尔曼滤波:
+     * - 创新(innovation)线性缩放 → 快速跟踪新目标
+     * - Q自适应: 创新大时增大过程噪声，快速收敛；创新小时减小，抑制噪声
+     * - R自适应: 测量噪声随创新幅度调整
      */
     private fun applyKalman(z: Float): Float {
         tickCount++
@@ -70,15 +71,28 @@ class DistanceFilter(
             kalmanInitialized = true
             return estimate
         }
-        val predCov = errorCov + processNoise
         val innovation = z - estimate
+        val absInnovation = Math.abs(innovation)
+
+        // Q自适应: 创新大 → 目标切换/运动 → 增大过程噪声
+        val qAdaptive = if (tickCount > windowSize) {
+            val qScale = when {
+                absInnovation > initMeasureNoise * 2f -> 4f   // 大跳变: 大幅增大Q
+                absInnovation > initMeasureNoise * 0.5f -> 2f // 中等创新: 中等增大Q
+                else -> 1f                                     // 小创新: 保持基础Q
+            }
+            processNoise * qScale
+        } else processNoise
+
+        val predCov = errorCov + qAdaptive
+
+        // R自适应: 线性缩放
         val rAdaptive = if (tickCount > windowSize) {
             val base = initMeasureNoise * 0.5f
-            // Linear scaling: |innovation| × 0.5 — tracks new targets quickly
-            // while still suppressing noise for small deviations.
-            val dynamic = Math.abs(innovation) * 0.5f
+            val dynamic = absInnovation * 0.5f
             (base + dynamic).coerceIn(initMeasureNoise * 0.1f, initMeasureNoise * 3f)
         } else initMeasureNoise
+
         val gain = predCov / (predCov + rAdaptive)
         estimate += gain * innovation
         errorCov = (1f - gain) * predCov
@@ -97,6 +111,18 @@ class DistanceFilter(
     /** #3: Dynamically adjust process noise based on IMU motion state */
     fun setProcessNoise(q: Float) {
         processNoise = q.coerceAtLeast(1f)
+    }
+
+    /** 样本收敛检查: 最近N个样本的标准差是否小于阈值 */
+    fun isConverged(thresholdMm: Float = 50f): Boolean {
+        if (!medianFilled && medianPos < 3) return false
+        val count = if (medianFilled) windowSize else medianPos
+        val vals = FloatArray(count)
+        for (i in 0 until count) vals[i] = medianBuffer[i]
+        vals.sort()
+        val mean = vals.sum() / count
+        val variance = vals.sumOf { (it - mean) * (it - mean) } / count
+        return kotlin.math.sqrt(variance) < thresholdMm
     }
 
     /** #7: Copy Kalman state from another filter for faster convergence */
