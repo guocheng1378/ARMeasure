@@ -198,9 +198,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     }
                     currentFocusDistance = newFocus
                 }
-                // Track actual crop region for correct intrinsic mapping
-                val crop = result.get(CaptureResult.SCALER_CROP_REGION)
-                if (crop != null) cameraCtrl.actualCropRegion = crop
             }
         }
         cameraCtrl.openCamera(selection, onReady = { same ->
@@ -471,10 +468,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val vw = cachedViewWidth; val vh = cachedViewHeight
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val hasRotation = Math.abs(deltaPitch) > 0.005f || Math.abs(deltaRoll) > 0.005f
-                // Fix #2: use actual crop region for correct intrinsic mapping
-                val (imgW, imgH) = cameraCtrl.getEffectiveImageSize()
-                val effImgW = if (imgW > 0) imgW else vw.toInt()
-                val effImgH = if (imgH > 0) imgH else vh.toInt()
+                val arr = cameraCtrl.rgbSensorActiveArray
+                val effImgW = arr?.width() ?: vw.toInt()
+                val effImgH = arr?.height() ?: vh.toInt()
                 val dist = if (intrinsics != null && intrinsics.size >= 4) {
                     if (hasRotation)
                         MeasurementEngine.compute3DDistanceIntrinsicRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, effImgW, effImgH, deltaPitch, deltaRoll)
@@ -554,9 +550,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val pts3d = pts.zip(depths).map { (p, d) ->
                     if (intrinsics != null && intrinsics.size >= 4) {
-                        val (imgW, imgH) = cameraCtrl.getEffectiveImageSize()
-                        val effW = if (imgW > 0) imgW else vw.toInt(); val effH = if (imgH > 0) imgH else vh.toInt()
-                        val ix = p.x / vw * effW; val iy = p.y / vh * effH
+                        val arr = cameraCtrl.rgbSensorActiveArray
+                        val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+                        val ix = p.x / vw * imgW; val iy = p.y / vh * imgH
                         Triple(d!! * (ix - intrinsics[2]) / intrinsics[0], d * (iy - intrinsics[3]) / intrinsics[1], d)
                     } else {
                         val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
