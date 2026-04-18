@@ -100,19 +100,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val vh = cachedViewHeight.takeIf { it > 0 } ?: return
             val cx = vw / 2f; val cy = vh / 2f
 
-            // 安卓方式: 直接用原始屏幕坐标 + 深度
-            val d1 = getRawDepthAt(p1.x, p1.y)
+            // ★ Project first point's 3D world coords back to current screen position
+            // This makes the anchor "stick" to the surface as the camera moves (Apple-like)
+            val world = firstWorld3D
+            val p1Screen = if (world != null) {
+                val proj = world3DToScreen(world.first, world.second, world.third)
+                proj  // (screenX, screenY) that moves with camera
+            } else {
+                Pair(p1.x, p1.y)  // fallback: use original screen position
+            }
+
+            // Read current depth at projected first point + current center
+            val d1 = getRawDepthAt(p1Screen.first, p1Screen.second)
             val d2 = getRawDepthAt(cx, cy)
 
-            if (d1 != null && d1 > 0 && d1 < 5000f && d2 != null && d2 > 0 && d2 < 5000f) {
+            // Also use firstDistance as fallback for d1 (anchor depth was well-sampled)
+            val depth1 = d1 ?: firstDistance
+
+            if (depth1 > 0 && depth1 < 1000f && d2 != null && d2 > 0 && d2 < 1000f) {
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val arr = cameraCtrl.rgbSensorActiveArray
                 val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
 
                 val rawDist = if (intrinsics != null && intrinsics.size >= 4) {
-                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, cx, cy, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                    MeasurementEngine.compute3DDistanceIntrinsic(p1Screen.first, p1Screen.second, cx, cy, depth1, d2, vw, vh, intrinsics, imgW, imgH)
                 } else {
-                    MeasurementEngine.compute3DDistance(p1.x, p1.y, cx, cy, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    MeasurementEngine.compute3DDistance(p1Screen.first, p1Screen.second, cx, cy, depth1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
 
                 if (rawDist > 0) {
@@ -120,6 +133,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     val dist = previewDistEma
                     runOnUiThread {
                         binding.overlayView.liveDistanceCm = dist
+                        binding.overlayView.previewAnchor = PointF(p1Screen.first, p1Screen.second)
                         binding.overlayView.invalidate()
                     }
                 }
@@ -210,7 +224,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         tofHelper.unregisterListener(this); imuHelper.stop()
         cameraCtrl.close(); stopBackgroundThread()
         depthBuffer = null; depthBufReusable = null
-        calibrating = false; firstPoint = null
+        calibrating = false; firstPoint = null; firstWorld3D = null; secondWorld3D = null
         binding.overlayView.placingSecondPoint = false
         super.onPause()
     }
@@ -348,13 +362,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }
             depthMapCm != null && depthMapCm > 0 -> depthMapCm
             else -> {
-                // No depth map — try AF focus distance (hyperfocal model: ~1/diopter)
+                // No depth map — try AF focus distance
                 val d = currentFocusDistance
-                if (d > 0.1f) {
-                    // d is in diopters (1/m). Clamp to reasonable range: 10cm ~ 10m
-                    val cm = (1f / d) * 100f
-                    if (cm in 5f..2000f) cm else tofCm
-                } else tofCm
+                if (d > 0) d * 100f else tofCm
             }
         }
 
@@ -569,18 +579,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }) { result ->
                 firstDistance = result?.depthCm ?: 0f
                 firstUncertainty = result?.uncertaintyCm ?: 0f
-                // Validate depth: reject near-zero, negative, or out-of-range
-                if (firstDistance < 5f || firstDistance > 2000f) {
-                    firstDistance = 0f
-                    hapticWarning()
-                    runOnUiThread {
-                        binding.progressBar.visibility = android.view.View.GONE
-                        binding.tvDistance.text = "⚠️ 无法获取深度，请对准平面重试"
-                        binding.overlayView.placingSecondPoint = false
-                        firstPoint = null
-                        updateOverlay()
-                    }
-                    return@collectDepthSamples
+                // Store 3D world coordinates — anchor sticks to surface as camera moves
+                if (firstDistance > 0) {
+                    firstWorld3D = screenToWorld3D(cx, cy, firstDistance)
                 }
                 runOnUiThread {
                     binding.overlayView.firstPointDepthCm = firstDistance
@@ -616,24 +617,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val arr = cameraCtrl.rgbSensorActiveArray
                 val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
 
-                val p1Screen = PointF(p1.x, p1.y)
-                val p2Screen = PointF(cx, cy)
-
-                // ★ Validate both depths before computing distance
-                if (d1 < 5f || d2 < 5f || d1 > 2000f || d2 > 2000f) {
-                    hapticWarning()
-                    runOnUiThread {
-                        binding.progressBar.visibility = android.view.View.GONE
-                        binding.tvDistance.text = "⚠️ 深度获取失败，请对准平面重试"
-                        binding.overlayView.liveDistanceCm = -1f
-                                                binding.overlayView.firstPointDepthCm = -1f
-                        binding.overlayView.secondPointDepthCm = -1f
-                        binding.overlayView.lineConfirmed = false
-                        overlayPoints.clear(); updateOverlay()
-                        firstPoint = null; firstWorld3D = null
-                    }
-                    return@collectDepthSamples
+                // ★ Use projected screen position for distance (Apple-like: anchor sticks to surface)
+                val p1Screen = if (firstWorld3D != null) {
+                    val proj = world3DToScreen(firstWorld3D!!.first, firstWorld3D!!.second, firstWorld3D!!.third)
+                    PointF(proj.first, proj.second)
+                } else {
+                    PointF(p1.x, p1.y)
                 }
+                val p2Screen = PointF(cx, cy)
 
                 val dist = if (d1 > 0 && d2 > 0) {
                     if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
@@ -656,7 +647,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val totalUnc = rawUnc * motionConfidence
 
                 binding.overlayView.liveDistanceCm = -1f
-                                binding.overlayView.firstPointDepthCm = -1f
+                binding.overlayView.previewAnchor = null
+                binding.overlayView.firstPointDepthCm = -1f
                 binding.overlayView.secondPointDepthCm = -1f
                 binding.overlayView.deviceIsLevel = false
                 binding.overlayView.lineConfirmed = true
@@ -764,10 +756,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         // Clean up previous mode state before switching
         if (currentMode == Mode.LINE && mode != Mode.LINE) {
             backgroundHandler?.removeCallbacks(linePreviewRunnable)
-            firstPoint = null
+            firstPoint = null; firstWorld3D = null; secondWorld3D = null
             binding.overlayView.placingSecondPoint = false
             binding.overlayView.liveDistanceCm = -1f
-                        binding.overlayView.firstPointDepthCm = -1f
+            binding.overlayView.previewAnchor = null
+            binding.overlayView.firstPointDepthCm = -1f
             binding.overlayView.secondPointDepthCm = -1f
         }
         // Clean up stale overlay lines when entering any mode
@@ -799,7 +792,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         previewDistEma = Float.NaN
         synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
-                measuredResult = "--"; binding.tvDistance.text = "--"
+        firstWorld3D = null; secondWorld3D = null
+        measuredResult = "--"; binding.tvDistance.text = "--"
         binding.progressBar.visibility = android.view.View.GONE
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList()
         binding.overlayView.areaPoints = emptyList(); binding.overlayView.showLineLabels = false
@@ -808,7 +802,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.lineConfirmed = false
         binding.overlayView.confirmFlash = false
         binding.overlayView.liveCrosshair = null; binding.overlayView.liveDistanceCm = -1f
-                binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f
+        binding.overlayView.previewAnchor = null
+        binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f
         binding.overlayView.deviceIsLevel = false
         depthFilter.reset(); tofHelper.reset()
         if (imuHelper.isAvailable()) imuHelper.reset()
@@ -928,7 +923,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> { backgroundHandler?.removeCallbacks(linePreviewRunnable); firstPoint = null; firstUncertainty = 0f; firstWorld3D = null; secondWorld3D = null; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f; binding.overlayView.deviceIsLevel = false; updateOverlay() }
+            Mode.LINE -> { backgroundHandler?.removeCallbacks(linePreviewRunnable); firstPoint = null; firstUncertainty = 0f; firstWorld3D = null; secondWorld3D = null; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; binding.overlayView.previewAnchor = null; binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f; binding.overlayView.deviceIsLevel = false; updateOverlay() }
             else -> resetMeasurement()
         }
     }
