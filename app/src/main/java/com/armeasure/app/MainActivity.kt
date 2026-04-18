@@ -335,6 +335,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             runOnUiThread {
                 if (dist != null && dist > 0) {
                     binding.overlayView.sweepDistanceCm = dist
+                    binding.overlayView.updateSweepText(String.format("%.1f cm", dist))
                     synchronized(sweepLock) {
                         sweepHistory.add(Pair(x, dist))
                         // #3: Remove from front until within limit (not double removeAt)

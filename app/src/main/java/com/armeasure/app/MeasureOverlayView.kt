@@ -259,6 +259,15 @@ class MeasureOverlayView @JvmOverloads constructor(
         c.drawText(text, x, ly + rRect.height()/2f, txtP)
     }
 
+    private var sweepTextCached: String = ""
+    private var sweepTextBounds: Rect = Rect()
+
+    // #Lint: Pre-allocated string to avoid allocations in onDraw()
+    fun updateSweepText(text: String) {
+        sweepTextCached = text
+        sweepTxtP.getTextBounds(text, 0, text.length, sweepTextBounds)
+    }
+
     // #21: Sweep trail with quadratic Bezier smoothing
     private fun drawSweep(c: Canvas) {
         val cx = width/2f; val cy = height/2f
@@ -286,11 +295,10 @@ class MeasureOverlayView @JvmOverloads constructor(
             c.drawPath(rPath, sweepTrailP)
         }
         c.drawLine(cx-40, cy, cx+40, cy, sweepCP); c.drawLine(cx, cy-40, cx, cy+40, sweepCP); c.drawCircle(cx, cy, 8f, sweepDotP)
-        if (sweepDistanceCm > 0) {
-            val txt = String.format("%.1f cm", sweepDistanceCm); sweepTxtP.getTextBounds(txt, 0, txt.length, rRect)
-            val pad = 20f; val w = rRect.width()/2f + pad; val h = rRect.height()/2f + pad
+        if (sweepDistanceCm > 0 && sweepTextCached.isNotEmpty()) {
+            val w = sweepTextBounds.width()/2f + 20f; val h = sweepTextBounds.height()/2f + 20f
             c.drawRoundRect(cx-w, cy-70-h, cx+w, cy-70+h, 16f, 16f, sweepTxtBgP)
-            c.drawText(txt, cx - rRect.width()/2f, cy - 70 + rRect.height()/2f, sweepTxtP)
+            c.drawText(sweepTextCached, cx - sweepTextBounds.width()/2f, cy - 70 + sweepTextBounds.height()/2f, sweepTxtP)
         }
     }
 
