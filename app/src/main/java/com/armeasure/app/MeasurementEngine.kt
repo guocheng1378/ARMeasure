@@ -187,4 +187,99 @@ object MeasurementEngine {
         if (isEmpty()) return null
         return sorted().median()
     }
+
+    /**
+     * #6: Fit a plane to 3D points using RANSAC, then project onto best-fit plane for area.
+     * Returns area in cm² on the fitted plane, or falls back to direct Newell's method.
+     * @param pts3d list of (x, y, z) in cm
+     * @param ransacIterations number of RANSAC trials (default 50)
+     * @param inlierThreshold max distance from plane to count as inlier (cm, default 5)
+     */
+    fun computePolygonArea3DRansac(
+        pts3d: List<Triple<Float, Float, Float>>,
+        ransacIterations: Int = 50,
+        inlierThreshold: Float = 5f
+    ): Float {
+        if (pts3d.size < 3) return 0f
+        if (pts3d.size == 3) return computePolygonArea3D(pts3d)
+
+        // RANSAC: find best plane from 3-point samples
+        var bestPlane = DoubleArray(4)  // (nx, ny, nz, d) where nx*x + ny*y + nz*z + d = 0
+        var bestInlierCount = 0
+        val n = pts3d.size
+
+        for (iter in 0 until ransacIterations) {
+            // Pick 3 random distinct points
+            val i1 = (Math.random() * n).toInt().coerceIn(0, n - 1)
+            var i2 = (Math.random() * n).toInt().coerceIn(0, n - 1)
+            while (i2 == i1) i2 = (Math.random() * n).toInt().coerceIn(0, n - 1)
+            var i3 = (Math.random() * n).toInt().coerceIn(0, n - 1)
+            while (i3 == i1 || i3 == i2) i3 = (Math.random() * n).toInt().coerceIn(0, n - 1)
+
+            val (ax, ay, az) = pts3d[i1]
+            val (bx, by, bz) = pts3d[i2]
+            val (cx, cy, cz) = pts3d[i3]
+
+            // Plane normal via cross product
+            val u1 = bx - ax; val u2 = by - ay; val u3 = bz - az
+            val v1 = cx - ax; val v2 = cy - ay; val v3 = cz - az
+            val nx = u2 * v3 - u3 * v2
+            val ny = u3 * v1 - u1 * v3
+            val nz = u1 * v2 - u2 * v1
+            val normLen = sqrt((nx * nx + ny * ny + nz * nz).toDouble())
+            if (normLen < 1e-6) continue
+            val pnx = nx / normLen; val pny = ny / normLen; val pnz = nz / normLen
+            val pd = -(pnx * ax + pny * ay + pnz * az)
+
+            // Count inliers
+            var inliers = 0
+            for (k in 0 until n) {
+                val (px, py, pz) = pts3d[k]
+                val dist = Math.abs(pnx * px + pny * py + pnz * pz + pd)
+                if (dist < inlierThreshold) inliers++
+            }
+            if (inliers > bestInlierCount) {
+                bestInlierCount = inliers
+                bestPlane = doubleArrayOf(pnx, pny, pnz, pd)
+            }
+        }
+
+        if (bestInlierCount < 3) return computePolygonArea3D(pts3d)
+
+        // Project all points onto the best-fit plane, then compute 2D area
+        val pnx = bestPlane[0]; val pny = bestPlane[1]; val pnz = bestPlane[2]; val pd = bestPlane[3]
+
+        // Build a 2D coordinate system on the plane
+        // u = arbitrary perpendicular to normal, v = normal × u
+        val ux: Double; val uy: Double; val uz: Double
+        if (Math.abs(pnx) < 0.9) {
+            ux = 1.0; uy = 0.0; uz = 0.0
+        } else {
+            ux = 0.0; uy = 1.0; uz = 0.0
+        }
+        // u = u - (u·n)n (Gram-Schmidt)
+        val dotUN = ux * pnx + uy * pny + uz * pnz
+        var u1x = ux - dotUN * pnx; var u1y = uy - dotUN * pny; var u1z = uz - dotUN * pnz
+        val uLen = sqrt(u1x * u1x + u1y * u1y + u1z * u1z)
+        u1x /= uLen; u1y /= uLen; u1z /= uLen
+        // v = n × u
+        val v1x = pny * u1z - pnz * u1y
+        val v1y = pnz * u1x - pnx * u1z
+        val v1z = pnx * u1y - pny * u1x
+
+        // Project to 2D
+        val projected = ArrayList<Pair<Float, Float>>(n)
+        // Use centroid as origin
+        val cx = pts3d.sumOf { it.first.toDouble() } / n
+        val cy = pts3d.sumOf { it.second.toDouble() } / n
+        val cz = pts3d.sumOf { it.third.toDouble() } / n
+        for (k in 0 until n) {
+            val dx = pts3d[k].first - cx; val dy = pts3d[k].second - cy; val dz = pts3d[k].third - cz
+            val pu = (dx * u1x + dy * u1y + dz * u1z).toFloat()
+            val pv = (dx * v1x + dy * v1y + dz * v1z).toFloat()
+            projected.add(Pair(pu, pv))
+        }
+
+        return computePolygonArea(projected)
+    }
 }

@@ -40,17 +40,16 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
 
     // Accumulated rotation since snapshot (rad)
     private var accumGyroX = 0.0; private var accumGyroY = 0.0; private var accumGyroZ = 0.0
-    private var accumLinAccelMag = 0.0  // accumulated |linear accel| integral (m/s)
+    // #7: proper velocity integration via trapezoidal rule
+    private var integratedVelocityMs = 0.0  // ∫|a(t)|dt in m/s
+    private var lastLinAccelTimestamp = 0L
     private var motionSamples = 0
 
     companion object {
-        // Thresholds — tuned for phone held by hand
-        /** Max acceptable rotation between taps (degrees) */
-        const val MAX_ROTATION_DEG = 3.0f
-        /** Max acceptable linear velocity between taps (m/s) */
-        const val MAX_VELOCITY_MS = 0.15f
-        /** Min reliable rotation to flag (degrees) — filter out sensor noise */
-        const val ROTATION_NOISE_FLOOR_DEG = 0.3f
+        // Thresholds — tuned for phone held by hand (using constants)
+        const val MAX_ROTATION_DEG = AppConstants.MAX_ROTATION_DEG
+        const val MAX_VELOCITY_MS = AppConstants.MAX_VELOCITY_MS
+        const val ROTATION_NOISE_FLOOR_DEG = AppConstants.ROTATION_NOISE_FLOOR_DEG
     }
 
     fun compensateDepth(depthCm: Float): Float {
@@ -82,7 +81,8 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         snapLinAccelX = linAccelX; snapLinAccelY = linAccelY; snapLinAccelZ = linAccelZ
         snapTimestamp = System.nanoTime()
         accumGyroX = 0.0; accumGyroY = 0.0; accumGyroZ = 0.0
-        accumLinAccelMag = 0.0
+        integratedVelocityMs = 0.0
+        lastLinAccelTimestamp = 0L
         motionSamples = 0
         hasSnapshot = true
     }
@@ -118,14 +118,10 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
 
         val maxRotDeg = maxOf(rotDeg, gyroRotDeg)
 
-        // Velocity: integrate |linear acceleration| over time
+        // #7: velocity is now properly integrated via trapezoidal rule
         val elapsedNs = System.nanoTime() - snapTimestamp
         val elapsedMs = elapsedNs / 1_000_000
-        val elapsedS = elapsedNs / 1_000_000_000.0
-        val velocityMs = if (motionSamples > 0 && elapsedS > 0) {
-            // Average linear acceleration magnitude × time = rough velocity estimate
-            (accumLinAccelMag / motionSamples * elapsedS).toFloat()
-        } else 0f
+        val velocityMs = integratedVelocityMs.toFloat()
 
         val excessive = maxRotDeg > MAX_ROTATION_DEG || velocityMs > MAX_VELOCITY_MS
 
@@ -173,10 +169,19 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
 
     private fun accumulateMotion() {
         if (!hasSnapshot) return
+        val now = System.nanoTime()
         motionSamples++
-        accumLinAccelMag += sqrt(
-            (linAccelX * linAccelX + linAccelY * linAccelY + linAccelZ * linAccelZ).toDouble()
-        )
+        // #7: trapezoidal integration: v += |a| * dt
+        if (lastLinAccelTimestamp > 0) {
+            val dt = (now - lastLinAccelTimestamp) / 1_000_000_000.0
+            if (dt > 0 && dt < 0.1) {  // skip outliers
+                val accelMag = sqrt(
+                    (linAccelX * linAccelX + linAccelY * linAccelY + linAccelZ * linAccelZ).toDouble()
+                )
+                integratedVelocityMs += accelMag * dt
+            }
+        }
+        lastLinAccelTimestamp = now
     }
 
     private fun processGyro(e: SensorEvent) {
@@ -198,12 +203,12 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         gyroPitch += gyroY * dt
         val ap = atan2(-accelX.toDouble(), sqrt((accelY * accelY + accelZ * accelZ).toDouble())).toFloat()
         val ar = atan2(accelY.toDouble(), accelZ.toDouble()).toFloat()
-        // Optimization #4: adaptive alpha — high motion → trust accel more, static → trust gyro more
+        // #4: adaptive alpha using constants
         val accelMag = sqrt((accelX * accelX + accelY * accelY + accelZ * accelZ).toDouble())
         val dynamicAlpha = when {
-            accelMag > 12.0 -> 0.90f   // high motion
-            accelMag < 8.5  -> 0.99f   // near-static (gravity only)
-            else -> 0.98f
+            accelMag > AppConstants.IMU_ACCEL_THRESHOLD_HIGH -> AppConstants.IMU_ADAPTIVE_ALPHA_MOTION
+            accelMag < AppConstants.IMU_ACCEL_THRESHOLD_LOW  -> AppConstants.IMU_ADAPTIVE_ALPHA_STATIC
+            else -> AppConstants.IMU_ADAPTIVE_ALPHA_DEFAULT
         }
         pitch = dynamicAlpha * gyroPitch + (1f - dynamicAlpha) * ap
         roll = dynamicAlpha * gyroRoll + (1f - dynamicAlpha) * ar
@@ -239,6 +244,6 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         lastTs = 0L
         hasSnapshot = false
         accumGyroX = 0.0; accumGyroY = 0.0; accumGyroZ = 0.0
-        accumLinAccelMag = 0.0; motionSamples = 0
+        integratedVelocityMs = 0.0; lastLinAccelTimestamp = 0L; motionSamples = 0
     }
 }

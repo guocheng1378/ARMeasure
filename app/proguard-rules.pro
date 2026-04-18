@@ -16,3 +16,11 @@
 # Kotlin
 -dontwarn kotlin.**
 -keep class kotlin.Metadata { *; }
+
+# Camera2 / SensorManager — prevent R8 from stripping reflection-accessed members
+-keep class android.hardware.camera2.** { *; }
+-keep class android.hardware.Sensor** { *; }
+
+# Keep line numbers for crash reports
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
