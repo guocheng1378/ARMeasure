@@ -2,12 +2,18 @@
 
 # Keep measurement engine (used by reflection or JNI in future)
 -keep class com.armeasure.app.MeasurementEngine { *; }
+-keep class com.armeasure.app.HeightMeasureHelper { *; }
+-keep class com.armeasure.app.AngleMeasureHelper { *; }
 
 # Keep Camera2 callback classes
 -keep class com.armeasure.app.CameraController$* { *; }
 
 # Keep custom views referenced from XML
 -keep class com.armeasure.app.MeasureOverlayView { *; }
+
+# Keep activities
+-keep class com.armeasure.app.SettingsActivity { *; }
+-keep class com.armeasure.app.HistoryActivity { *; }
 
 # AndroidX / Material
 -dontwarn com.google.android.material.**

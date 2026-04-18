@@ -1,4 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AR测距</string>
+    <string name="mode_point">单点</string>
+    <string name="mode_line">测距</string>
+    <string name="mode_area">面积</string>
+    <string name="mode_sweep">扫掠</string>
+    <string name="mode_height">高度</string>
+    <string name="mode_angle">角度</string>
+    <string name="mode_level">水平仪</string>
+    <string name="settings">设置</string>
+    <string name="reset">重置</string>
+    <string name="save">保存</string>
+    <string name="undo">撤回</string>
+    <string name="history">历史</string>
+    <string name="calibration">校准</string>
+    <string name="sensor_detecting">检测中...</string>
+    <string name="tap_to_measure">点击屏幕测量</string>
+    <string name="sampling">采样中(%1$d/%2$d)…</string>
+    <string name="no_depth">⚠️ 无法获取深度</string>
+    <string name="focus_error">对焦中…</string>
+    <string name="unit_cm">厘米</string>
+    <string name="unit_inch">英寸</string>
+    <string name="unit_m">米</string>
 </resources>

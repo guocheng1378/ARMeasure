@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Measure" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/colorPrimary</item>
-        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
-        <item name="colorAccent">@color/colorAccent</item>
-        <item name="android:windowBackground">@color/background</item>
-        <item name="android:statusBarColor">#AA000000</item>
-        <item name="android:navigationBarColor">#AA000000</item>
+        <item name="colorPrimary">#00FF88</item>
+        <item name="colorPrimaryVariant">#00CC6A</item>
+        <item name="colorOnPrimary">#000000</item>
+        <item name="colorSecondary">#FFCC00</item>
+        <item name="colorSecondaryVariant">#CC9900</item>
+        <item name="colorOnSecondary">#000000</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
     </style>
 </resources>

@@ -84,4 +84,15 @@ object AppConstants {
     // ── Tutorial ──
     const val TUTORIAL_PREF = "armeasure_tutorial"
     const val TUTORIAL_SHOWN_KEY = "shown"
+
+    // ── Level mode ──
+    const val LEVEL_THRESHOLD_DEG = 1.0f        // degrees — considered "level" below this
+    const val LEVEL_UPDATE_INTERVAL_MS = 50L     // sensor refresh rate for level display
+
+    // ── Height / Angle ──
+    const val ANGLE_MIN_ARM_CM = 3f              // minimum arm length for valid angle
+    const val HEIGHT_MIN_POINTS_CM = 1f          // minimum height to display result
+
+    // ── Settings ──
+    const val SETTINGS_PREF = "armeasure_settings"
 }

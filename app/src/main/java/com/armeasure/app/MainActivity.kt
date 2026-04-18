@@ -42,7 +42,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var backgroundThread: HandlerThread? = null
     @Volatile private var currentFocusDistance: Float = -1f
 
-    private enum class Mode { POINT, LINE, AREA, SWEEP }
+    private enum class Mode { POINT, LINE, AREA, SWEEP, HEIGHT, ANGLE, LEVEL }
     private enum class MeasureUnit { CM, INCH, M }
     private var currentUnit = MeasureUnit.CM
 
@@ -60,6 +60,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private val overlayPoints = mutableListOf<PointF>()
     private val overlayAreaPoints = mutableListOf<PointF>()
+    private val heightPoints = mutableListOf<PointF>()
+    private val anglePoints = mutableListOf<PointF>()
+    private var angleDepths = mutableListOf<Float>()
     private var firstPoint: PointF? = null
     @Volatile private var firstDistance: Float = 0f
     private var firstUncertainty: Float = 0f
@@ -159,6 +162,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         super.onResume()
         startBackgroundThread(); cameraCtrl.backgroundHandler = backgroundHandler
         tofHelper.registerListener(this); imuHelper.start()
+        // Level mode updates will be handled via sensor callback
         if (cameraCtrl.cameraDevice == null && cameraCtrl.captureSession == null
             && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
     }
@@ -171,7 +175,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         super.onPause()
     }
 
-    override fun onSensorChanged(event: SensorEvent) { tofHelper.onSensorEvent(event) }
+    override fun onSensorChanged(event: SensorEvent) {
+        tofHelper.onSensorEvent(event)
+        if (currentMode == Mode.LEVEL) {
+            val tilt = Math.toDegrees(imuHelper.tiltAngle.toDouble()).toFloat()
+            val isLevel = tilt < 1.0f
+            measuredResult = String.format("%.1f°", tilt)
+            binding.overlayView.levelTiltDeg = tilt
+            binding.overlayView.postInvalidate()
+            runOnUiThread {
+                binding.tvDistance.text = if (isLevel) "✓ 水平 ($measuredResult)" else "偏斜 $measuredResult"
+            }
+        }
+    }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     // ── Haptic feedback ──────────────────────────────────────
@@ -265,9 +281,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun updateDepthToggleButton() {
-        val enabled = cameraCtrl.depthCameraEnabled
-        binding.btnDepthToggle.text = if (enabled) "深度:开" else "深度:关"
-        binding.btnDepthToggle.setBackgroundColor(if (enabled) 0x3300FF88.toInt() else 0x00000000)
+        // Depth toggle is now in SettingsActivity — no-op here
     }
 
     // ── Measurement ──────────────────────────────────────────
@@ -482,6 +496,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Mode.LINE -> handleLineTap(x, y)
             Mode.AREA -> handleAreaTap(x, y)
             Mode.SWEEP -> {}
+            Mode.HEIGHT -> handleHeightTap(x, y)
+            Mode.ANGLE -> handleAngleTap(x, y)
+            Mode.LEVEL -> {} // Level mode doesn't use tap
         }
     }
 
@@ -639,6 +656,138 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (overlayAreaPoints.size >= 3) { binding.progressBar.visibility = android.view.View.GONE; hapticComplete() }
     }
 
+    private fun handleHeightTap(x: Float, y: Float) {
+        heightPoints.add(PointF(x, y))
+        binding.overlayView.triggerPulse(x, y)
+        haptic()
+        
+        if (heightPoints.size == 1) {
+            binding.tvDistance.text = "点击物体顶部"
+            overlayPoints.clear()
+            overlayPoints.add(PointF(x, y))
+            updateOverlay()
+        } else if (heightPoints.size == 2) {
+            overlayPoints.add(PointF(x, y))
+            updateOverlay()
+            
+            val p1 = heightPoints[0]; val p2 = heightPoints[1]
+            binding.tvDistance.text = "采样中..."
+            binding.progressBar.visibility = android.view.View.VISIBLE
+            
+            // Collect depth at both points
+            collectDepthSamples(p1.x, p1.y) { result1 ->
+                val d1 = result1?.depthCm ?: 0f
+                if (d1 <= 0) {
+                    runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE }
+                    heightPoints.clear()
+                    return@collectDepthSamples
+                }
+                collectDepthSamples(p2.x, p2.y) { result2 ->
+                    val d2 = result2?.depthCm ?: 0f
+                    if (d2 <= 0) {
+                        runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE }
+                        heightPoints.clear()
+                        return@collectDepthSamples
+                    }
+                    
+                    val vw = cachedViewWidth; val vh = cachedViewHeight
+                    val intrinsics = cameraCtrl.intrinsicCalibration
+                    val arr = cameraCtrl.rgbSensorActiveArray
+                    val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+                    
+                    val height = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
+                        HeightMeasureHelper.computeHeight(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, intrinsics, imgW, imgH)
+                    } else {
+                        HeightMeasureHelper.computeHeightFOV(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, getVfovDegrees())
+                    }
+                    
+                    runOnUiThread {
+                        binding.progressBar.visibility = android.view.View.GONE
+                        measuredResult = formatDistance(height)
+                        binding.tvDistance.text = "↕ $measuredResult"
+                        binding.overlayView.lines = listOf(Pair(PointF(p1.x, p1.y), PointF(p2.x, p2.y)))
+                        binding.overlayView.lineDistanceLabels = listOf(measuredResult)
+                        binding.overlayView.showLineLabels = true
+                        binding.overlayView.lineConfirmed = true
+                        binding.overlayView.animateLineExpand()
+                        hapticComplete()
+                        saveToHistory(measuredResult, "高度")
+                        heightPoints.clear()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleAngleTap(x: Float, y: Float) {
+        anglePoints.add(PointF(x, y))
+        binding.overlayView.triggerPulse(x, y)
+        haptic()
+        
+        when (anglePoints.size) {
+            1 -> {
+                binding.tvDistance.text = "点击第一条线端点"
+                overlayPoints.clear()
+                overlayPoints.add(PointF(x, y))
+                updateOverlay()
+            }
+            2 -> {
+                binding.tvDistance.text = "点击第二条线端点"
+                overlayPoints.add(PointF(x, y))
+                updateOverlay()
+            }
+            3 -> {
+                overlayPoints.add(PointF(x, y))
+                updateOverlay()
+                binding.tvDistance.text = "计算角度..."
+                binding.progressBar.visibility = android.view.View.VISIBLE
+                
+                // Get depths for all 3 points
+                val localDepths = mutableListOf<Float>()
+                fun collectNext(idx: Int) {
+                    if (idx >= 3) {
+                        // Compute angle
+                        val vw = cachedViewWidth; val vh = cachedViewHeight
+                        val intrinsics = cameraCtrl.intrinsicCalibration
+                        val arr = cameraCtrl.rgbSensorActiveArray
+                        val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+                        
+                        val angle = AngleMeasureHelper.computeAngleFromScreen(
+                            anglePoints[1].x, anglePoints[1].y, localDepths[1],
+                            anglePoints[0].x, anglePoints[0].y, localDepths[0],
+                            anglePoints[2].x, anglePoints[2].y, localDepths[2],
+                            vw, vh, intrinsics, imgW, imgH,
+                            getHfovDegrees(), getVfovDegrees()
+                        )
+                        
+                        runOnUiThread {
+                            binding.progressBar.visibility = android.view.View.GONE
+                            measuredResult = String.format("%.1f°", angle)
+                            binding.tvDistance.text = "∠ $measuredResult"
+                            binding.overlayView.lines = listOf(
+                                Pair(anglePoints[1], anglePoints[0]),
+                                Pair(anglePoints[1], anglePoints[2])
+                            )
+                            binding.overlayView.lineDistanceLabels = listOf(measuredResult)
+                            binding.overlayView.showLineLabels = true
+                            binding.overlayView.lineConfirmed = true
+                            binding.overlayView.animateLineExpand()
+                            hapticComplete()
+                            saveToHistory(measuredResult, "角度")
+                            anglePoints.clear()
+                        }
+                        return
+                    }
+                    collectDepthSamples(anglePoints[idx].x, anglePoints[idx].y) { result ->
+                        localDepths.add(result?.depthCm ?: 0f)
+                        collectNext(idx + 1)
+                    }
+                }
+                collectNext(0)
+            }
+        }
+    }
+
     private fun updateOverlay() {
         binding.overlayView.points = overlayPoints.toList()
         binding.overlayView.areaPoints = emptyList()
@@ -688,20 +837,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.btnLineMode.setOnClickListener { setMode(Mode.LINE) }
         binding.btnAreaMode.setOnClickListener { setMode(Mode.AREA) }
         binding.btnSweepMode.setOnClickListener { setMode(Mode.SWEEP) }
-        binding.btnDepthToggle.setOnClickListener { toggleDepthCamera() }
+        // New measurement modes
+        binding.btnHeightMode?.setOnClickListener { setMode(Mode.HEIGHT) }
+        binding.btnAngleMode?.setOnClickListener { setMode(Mode.ANGLE) }
+        binding.btnLevelMode?.setOnClickListener { setMode(Mode.LEVEL) }
+        // Settings
+        binding.btnSettings.setOnClickListener { startActivity(android.content.Intent(this, SettingsActivity::class.java)) }
         binding.btnUndo.setOnClickListener { undoLastPoint() }
         binding.overlayView.onScale = { sf ->
             val sv = binding.surfaceView; val ns = (sv.scaleX * sf).coerceIn(0.5f, 5f)
             sv.scaleX = ns; sv.scaleY = ns; sv.pivotX = sv.width / 2f; sv.pivotY = sv.height / 2f
         }
-        binding.btnCalibrate.setOnClickListener { startCalibration() }
-        binding.btnCalibrate.setOnLongClickListener { setManualDepth(); true }
-        binding.btnHistory.setOnClickListener { showHistory() }
+        binding.btnHistory.setOnClickListener { startActivity(android.content.Intent(this, HistoryActivity::class.java)) }
         binding.tvDistance.setOnLongClickListener { cycleUnit(); true }
-        binding.btnReset.setOnClickListener { resetMeasurement() }
+        binding.fabReset.setOnClickListener { resetMeasurement() }
         binding.btnSave.setOnClickListener { saveMeasurement() }
         setMode(Mode.POINT)
-        updateDepthToggleButton()
     }
 
     private fun setMode(mode: Mode) {
@@ -720,20 +871,34 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         currentMode = mode; calibrating = false
         binding.tvMode.text = when (mode) {
             Mode.POINT -> "点击测距"; Mode.LINE -> "两点测距"; Mode.AREA -> "面积测量"; Mode.SWEEP -> "扫掠测距"
+            Mode.HEIGHT -> "高度测量"; Mode.ANGLE -> "角度测量"; Mode.LEVEL -> "水平仪"
         }
         binding.overlayView.sweepMode = (mode == Mode.SWEEP)
-        val allBtns = listOf(binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode)
-        allBtns.forEach { it.setBackgroundColor(0x00000000); it.setTextColor(android.graphics.Color.parseColor("#AAAAAA")) }
+        binding.overlayView.levelMode = (mode == Mode.LEVEL)
+        // Collect all mode buttons (some may be null if layout doesn't have them)
+        val allBtns = listOfNotNull(
+            binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode,
+            binding.btnHeightMode, binding.btnAngleMode, binding.btnLevelMode
+        )
+        allBtns.forEach {
+            it.setBackgroundColor(0x00000000)
+            // Reset text color on child TextView if it's a LinearLayout
+            val tv = (it as? android.widget.LinearLayout)?.getChildAt(1) as? android.widget.TextView
+            tv?.setTextColor(android.graphics.Color.parseColor("#AAAAAA"))
+        }
         val active = when (mode) {
             Mode.POINT -> binding.btnPointMode; Mode.LINE -> binding.btnLineMode
             Mode.AREA -> binding.btnAreaMode; Mode.SWEEP -> binding.btnSweepMode
+            Mode.HEIGHT -> binding.btnHeightMode; Mode.ANGLE -> binding.btnAngleMode; Mode.LEVEL -> binding.btnLevelMode
         }
-        active.setBackgroundColor(android.graphics.Color.parseColor("#33FFFFFF"))
-        active.setTextColor(android.graphics.Color.WHITE)
+        active?.setBackgroundColor(android.graphics.Color.parseColor("#2200FF88"))
+        val activeTv = (active as? android.widget.LinearLayout)?.getChildAt(1) as? android.widget.TextView
+        activeTv?.setTextColor(android.graphics.Color.parseColor("#00FF88"))
     }
 
     private fun resetMeasurement() {
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
+        heightPoints.clear(); anglePoints.clear(); angleDepths.clear()
                         synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
                 measuredResult = "--"; binding.tvDistance.text = "--"
@@ -862,6 +1027,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 }
             }
             Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.lines = emptyList(); updateOverlay() }
+            Mode.HEIGHT -> {
+                if (heightPoints.isNotEmpty()) heightPoints.removeAt(heightPoints.size - 1)
+                overlayPoints.clear(); updateOverlay()
+                binding.tvDistance.text = if (heightPoints.isEmpty()) "--" else "点击物体顶部"
+            }
+            Mode.ANGLE -> {
+                if (anglePoints.isNotEmpty()) anglePoints.removeAt(anglePoints.size - 1)
+                overlayPoints.clear()
+                anglePoints.forEach { overlayPoints.add(it) }
+                updateOverlay()
+                binding.tvDistance.text = when (anglePoints.size) {
+                    0 -> "--"
+                    1 -> "点击第一条线端点"
+                    else -> "点击第二条线端点"
+                }
+            }
             else -> resetMeasurement()
         }
     }
@@ -925,15 +1106,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             .putFloat("factor", calibrationFactor).putBoolean("calibrated", isCalibrated).apply()
     }
     private fun updateCalibrationUI() {
-        if (isCalibrated) {
-            binding.tvCalibration.text = "x${String.format("%.3f", calibrationFactor)}"
-            binding.tvCalibration.setTextColor(android.graphics.Color.parseColor("#00FF88"))
-        } else { binding.tvCalibration.text = "" }
-        binding.btnCalibrate.setBackgroundColor(if (calibrating) 0x33FFCC00.toInt() else 0x00000000)
-        if (manualDepthCm > 0) {
-            binding.tvCalibration.text = "ref:${String.format("%.0f", manualDepthCm)}cm"
-            binding.tvCalibration.setTextColor(android.graphics.Color.parseColor("#FFCC00"))
-        }
+        // Calibration UI is now in SettingsActivity
+        // Keep calibration state but don't reference removed views
     }
 
     /** Set manual reference depth for ToF-only devices */

@@ -27,6 +27,9 @@ class MeasureOverlayView @JvmOverloads constructor(
     var lineConfirmed: Boolean = false
     /** Brief flash state during confirm transition (250ms) */
     var confirmFlash: Boolean = false
+    /** Level mode — shows a bubble level instead of measurement overlay */
+    var levelMode: Boolean = false
+    var levelTiltDeg: Float = 0f  // current tilt angle in degrees
 
     var onTap: ((Float, Float) -> Unit)? = null
     var onMove: ((Float, Float) -> Unit)? = null
@@ -201,6 +204,9 @@ class MeasureOverlayView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
+        // Level mode — draw bubble level overlay and skip everything else
+        if (levelMode) { drawLevel(canvas); return }
+
         // Tutorial overlay
         if (showTutorial) { drawTutorial(canvas); return }
         if (sweepMode) { drawSweep(canvas); return }
@@ -326,6 +332,88 @@ class MeasureOverlayView @JvmOverloads constructor(
             val px = rp.x.coerceIn(0f, w); val py = rp.y.coerceIn(0f, h)
             canvas.drawCircle(px, py, 4f, dotP)
             canvas.drawCircle(px, py, 10f, dotRingP)
+        }
+    }
+
+    private fun drawLevel(c: Canvas) {
+        val cx = width / 2f
+        val cy = height / 2f
+        val bubbleRadius = 120f  // circle radius
+        val dotR = 12f  // bubble dot radius
+
+        // Outer circle
+        val circleP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#40FFFFFF")
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        c.drawCircle(cx, cy, bubbleRadius, circleP)
+
+        // Crosshair
+        c.drawLine(cx - 20f, cy, cx + 20f, cy, crossP)
+        c.drawLine(cx, cy - 20f, cx, cy + 20f, crossP)
+
+        // Center target rings
+        val ring30 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#20FFFFFF")
+            style = Paint.Style.STROKE
+            strokeWidth = 1f
+        }
+        c.drawCircle(cx, cy, 30f, ring30)
+        c.drawCircle(cx, cy, 60f, ring30)
+
+        // Bubble dot — moves based on tilt
+        val maxOffset = bubbleRadius - dotR - 4f
+        val tiltRad = Math.toRadians(levelTiltDeg.toDouble())
+        val isLevel = levelTiltDeg < 1.0f
+        val bubbleColor = if (isLevel) Color.parseColor("#00FF88") else Color.parseColor("#FFCC00")
+        val bubbleP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = bubbleColor
+            style = Paint.Style.FILL
+        }
+        // Clamp offset to circle
+        val rawOffset = (tiltRad * 200).toFloat()  // scale factor for visual movement
+        val bx = cx + rawOffset.coerceIn(-maxOffset, maxOffset)
+        val by = cy + rawOffset.coerceIn(-maxOffset, maxOffset)
+        c.drawCircle(bx, by, dotR, bubbleP)
+
+        // Glow for level state
+        if (isLevel) {
+            val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#3000FF88")
+                style = Paint.Style.FILL
+                maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
+            }
+            c.drawCircle(bx, by, dotR + 4f, glowP)
+
+            // Level indicator text
+            val levelText = "✓ 水平"
+            val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#00FF88")
+                textSize = 28f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                textAlign = Paint.Align.CENTER
+            }
+            c.drawText(levelText, cx, cy + bubbleRadius + 50f, txtP)
+        } else {
+            val tiltText = String.format("%.1f°", levelTiltDeg)
+            val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#FFCC00")
+                textSize = 32f
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                textAlign = Paint.Align.CENTER
+                setShadowLayer(4f, 1f, 1f, Color.BLACK)
+            }
+            c.drawText(tiltText, cx, cy + bubbleRadius + 50f, txtP)
+
+            // Direction indicator
+            val dirText = "偏斜"
+            val dirP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#88FFFFFF")
+                textSize = 18f
+                textAlign = Paint.Align.CENTER
+            }
+            c.drawText(dirText, cx, cy + bubbleRadius + 80f, dirP)
         }
     }
 
