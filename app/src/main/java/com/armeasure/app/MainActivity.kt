@@ -563,7 +563,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 firstUncertainty = result?.uncertaintyCm ?: 0f
                 runOnUiThread {
                     binding.overlayView.firstPointDepthCm = firstDistance
-                    binding.tvDistance.text = "将 ⊕ 对准第二点，点击确认"
+                    binding.tvDistance.text = "移动手机瞄准 → 点击 ⊕ 确认"
                 }
                 previewDistEma = Float.NaN
                 backgroundHandler?.post(linePreviewRunnable)

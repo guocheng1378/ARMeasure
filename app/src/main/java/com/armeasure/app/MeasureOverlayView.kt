@@ -63,8 +63,8 @@ class MeasureOverlayView @JvmOverloads constructor(
     }
     private val arrowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
     private val previewP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#50FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 1.5f
-        pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        color = Color.parseColor("#A0FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 2f
+        strokeCap = Paint.Cap.ROUND
     }
     private val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; textSize = 26f; typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
@@ -252,35 +252,46 @@ class MeasureOverlayView @JvmOverloads constructor(
         if (placingSecondPoint && points.size == 1) {
             val p0 = points[0]
             val cx = width / 2f; val cy = height / 2f
-            // Live preview line (dashed)
+
+            // ── Preview line: connects first point to center crosshair ──
+            // Use same line style as confirmed measurement but thinner
             canvas.drawLine(p0.x, p0.y, cx, cy, previewP)
-            // ★ First point: SOLID anchored marker (white filled dot + ring)
-            canvas.drawCircle(p0.x, p0.y, 6f, dotP)           // solid white center
-            canvas.drawCircle(p0.x, p0.y, 14f, endpointRingP) // inner ring
-            canvas.drawCircle(p0.x, p0.y, 20f, endpointRingOuterP) // outer ring
-            // ★ Screen center: crosshair cursor (aim indicator)
-            val tick = 14f
-            // Confirm flash: briefly brighten the crosshair
-            val crossAlpha = if (confirmFlash) 255 else 180
-            crossP.alpha = crossAlpha
-            crossP.strokeWidth = if (confirmFlash) 2.5f else 1.5f
-            canvas.drawLine(cx - tick, cy, cx - 4, cy, crossP)
-            canvas.drawLine(cx + 4, cy, cx + tick, cy, crossP)
-            canvas.drawLine(cx, cy - tick, cx, cy - 4, crossP)
-            canvas.drawLine(cx, cy + 4, cx, cy + tick, crossP)
-            canvas.drawCircle(cx, cy, 18f, crossP)
+
+            // ── First point: DIMMED anchor (起点) — not the active target ──
+            // Smaller, faded, with "起点" label to show it's a reference, not interactive
+            dotRingP.alpha = 100
+            canvas.drawCircle(p0.x, p0.y, 4f, dotRingP)
+            canvas.drawCircle(p0.x, p0.y, 12f, dotRingP)
+            dotRingP.alpha = 255 // restore
+            val depthLabel = if (firstPointDepthCm > 0) "起点 ${String.format("%.0fcm", firstPointDepthCm)}" else "起点"
+            drawDepthLabel(canvas, depthLabel, p0.x, p0.y, above = true)
+
+            // ── Center crosshair: LARGE, BRIGHT aim target — this is what you move ──
+            val tick = 22f // bigger than before (was 14)
+            crossP.color = Color.WHITE
+            crossP.alpha = 220
+            crossP.strokeWidth = 2.5f
+            // Crosshair lines with gap in center
+            canvas.drawLine(cx - tick, cy, cx - 5, cy, crossP)
+            canvas.drawLine(cx + 5, cy, cx + tick, cy, crossP)
+            canvas.drawLine(cx, cy - tick, cx, cy - 5, crossP)
+            canvas.drawLine(cx, cy + 5, cx, cy + tick, crossP)
+            // Outer ring (thick, bright)
+            canvas.drawCircle(cx, cy, 24f, crossP)
+            // Inner dot
+            dotP.color = Color.WHITE
+            canvas.drawCircle(cx, cy, 3f, dotP)
             crossP.alpha = 255; crossP.strokeWidth = 1.5f // restore
-            // "点击确认" label below crosshair
-            drawLabel(canvas, "点击确认", cx, cy + 32f)
-            // Live distance label at midpoint
+
+            // "确认" button hint below crosshair
+            drawLabel(canvas, "点击此处确认", cx, cy + 40f)
+
+            // Live distance on the preview line
             if (liveDistanceCm > 0) {
                 val mx = (p0.x + cx) / 2f; val my = (p0.y + cy) / 2f
                 drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
             }
-            // Depth label only on the anchored point
-            if (firstPointDepthCm > 0) {
-                drawDepthLabel(canvas, String.format("%.0fcm", firstPointDepthCm), p0.x, p0.y, above = true)
-            }
+
             // Level indicator
             if (deviceIsLevel) {
                 drawLevelBadge(canvas)
