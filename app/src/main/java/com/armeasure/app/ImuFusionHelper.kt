@@ -82,7 +82,8 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         snapTimestamp = System.nanoTime()
         accumGyroX = 0.0; accumGyroY = 0.0; accumGyroZ = 0.0
         integratedVelocityMs = 0.0
-        lastLinAccelTimestamp = 0L
+        // Reset timestamp so first post-snapshot sample doesn't use stale dt
+        lastLinAccelTimestamp = System.nanoTime()
         motionSamples = 0
         hasSnapshot = true
     }
@@ -160,28 +161,32 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
                 Sensor.TYPE_GYROSCOPE -> processGyro(e)
                 Sensor.TYPE_LINEAR_ACCELERATION -> {
                     linAccelX = e.values[0]; linAccelY = e.values[1]; linAccelZ = e.values[2]
-                    accumulateMotion()
+                    accumulateMotion(e.timestamp)
                 }
             }
         }
         override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     }
 
-    private fun accumulateMotion() {
+    /**
+     * #26: Fix — always update lastLinAccelTimestamp even when no snapshot,
+     * to avoid huge dt on first post-snapshot sample.
+     * Uses event timestamp (not System.nanoTime) for consistent dt calculation.
+     */
+    private fun accumulateMotion(eventTimestamp: Long) {
         if (!hasSnapshot) return
-        val now = System.nanoTime()
         motionSamples++
-        // #7: trapezoidal integration: v += |a| * dt
+        // Trapezoidal integration: v += |a| * dt
         if (lastLinAccelTimestamp > 0) {
-            val dt = (now - lastLinAccelTimestamp) / 1_000_000_000.0
-            if (dt > 0 && dt < 0.1) {  // skip outliers
+            val dt = (eventTimestamp - lastLinAccelTimestamp) / 1_000_000_000.0
+            if (dt > 0 && dt < AppConstants.VELOCITY_DT_MAX) {  // skip outliers
                 val accelMag = sqrt(
                     (linAccelX * linAccelX + linAccelY * linAccelY + linAccelZ * linAccelZ).toDouble()
                 )
                 integratedVelocityMs += accelMag * dt
             }
         }
-        lastLinAccelTimestamp = now
+        lastLinAccelTimestamp = eventTimestamp
     }
 
     private fun processGyro(e: SensorEvent) {

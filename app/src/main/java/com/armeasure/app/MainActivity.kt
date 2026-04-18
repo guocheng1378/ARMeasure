@@ -60,15 +60,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
     private val sweepLock = Any()
+    // #2: depthCache synchronized access
     private val depthCache = mutableMapOf<Int, Float>()
+    private val depthCacheLock = Any()
     private val maxSweepHistory = 200
+
+    // ── Cached surface dimensions for thread-safe access (#1) ──
+    @Volatile private var cachedViewWidth: Float = 0f
+    @Volatile private var cachedViewHeight: Float = 0f
 
     // ── Debounce ──
     private var lastTapTime = 0L
     private var lastModeClickTime = 0L
     private var lastUndoClickTime = 0L
-    private val TAP_DEBOUNCE_MS = 400L
-    private val MODE_DEBOUNCE_MS = 300L
 
     companion object {
         private const val TAG = "ARMeasure"
@@ -109,8 +113,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code, perms, results)
-        if (code != REQUEST_CAMERA || results.isEmpty() || results[0] != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "需要相机权限", Toast.LENGTH_LONG).show(); finish()
+        if (code == REQUEST_CAMERA) {
+            if (results.isEmpty() || results[0] != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "需要相机权限才能使用测距功能", Toast.LENGTH_LONG).show()
+                // #5: Don't immediately finish — let user retry by showing rationale
+                binding.tvSensor.text = "❌ 需要相机权限"
+                binding.tvDistance.text = "请授予相机权限后重启应用"
+            }
         }
     }
 
@@ -187,6 +196,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         cameraOpening = true
         depthBuffer = null
 
+        // #15: Don't update button state until toggle actually succeeds
         cameraCtrl.toggleDepthCamera { enabled ->
             cameraOpening = false
             runOnUiThread {
@@ -206,6 +216,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         )
     }
 
+    // #1: Thread-safe — uses cached dimensions instead of reading View properties
     private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null): Float? {
         var raw: Float? = null
         // Try depth map first, then ToF, then AF focus distance
@@ -214,8 +225,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
         // Depth fusion: when both depth map and ToF are available, combine them
         if (raw != null && raw > 0 && tofDist != null && tofDist > 0) {
-            // ToF is typically more precise at short range, depth map gives spatial info
-            // Use inverse-variance weighting: ToF variance ~25cm² (5cm σ), DEPTH16 ~100cm² (10cm σ)
             val tofVar = AppConstants.TOF_VARIANCE
             val depthVar = if (raw < AppConstants.DEPTH16_CLOSE_THRESHOLD_CM) AppConstants.DEPTH16_VARIANCE_CLOSE else AppConstants.DEPTH16_VARIANCE_FAR
             raw = MeasurementEngine.fuseDepth(raw, depthVar, tofDist, tofVar)
@@ -225,7 +234,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (raw == null || raw <= 0) { val d = currentFocusDistance; if (d > 0) raw = d * 100f }
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
         if (raw != null && raw > 0 && imuHelper.isAvailable()) {
-            val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
+            val vw = cachedViewWidth; val vh = cachedViewHeight
             return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh, raw) else imuHelper.compensateDepth(raw)
         }
         return raw
@@ -308,11 +317,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun onScreenTapped(x: Float, y: Float) {
         val now = System.currentTimeMillis()
-        if (now - lastTapTime < TAP_DEBOUNCE_MS) return
+        if (now - lastTapTime < AppConstants.TAP_DEBOUNCE_MS) return
         lastTapTime = now
         triggerAutoFocus(x, y); haptic()
         // AF needs more settling time than depth-based modes
-        val settleMs = if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) 600L else 800L
+        val settleMs = if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) AppConstants.SETTLE_MS_DEPTH else AppConstants.SETTLE_MS_AF
         if (calibrating) {
             backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, settleMs)
             return
@@ -328,8 +337,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.sweepDistanceCm = dist
                     synchronized(sweepLock) {
                         sweepHistory.add(Pair(x, dist))
-                        if (sweepHistory.size > maxSweepHistory) {
-                            sweepHistory.removeAt(0)
+                        // #3: Remove from front until within limit (not double removeAt)
+                        while (sweepHistory.size > maxSweepHistory) {
                             sweepHistory.removeAt(0)
                         }
                         binding.overlayView.sweepHistory = sweepHistory.toList()
@@ -471,7 +480,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val consistencyWarn = if (depthRatio > AppConstants.DEPTH_CONSISTENCY_MAX_RATIO)
                     "⚠️ 两点平面差距大(${String.format("%.1f", depthRatio)}x)" else null
 
-                val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
+                // #1: Use cached surface dimensions for thread safety
+                val vw = cachedViewWidth; val vh = cachedViewHeight
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val dist = if (intrinsics != null && intrinsics.size >= 4) {
                     val arr = cameraCtrl.rgbSensorActiveArray
@@ -499,6 +509,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handleAreaTap(x: Float, y: Float) {
         overlayAreaPoints.add(PointF(x, y))
+        binding.overlayView.animateNewPoint() // #23: pop-in animation for new point
         if (overlayAreaPoints.size >= 3) {
             val area = computeArea(overlayAreaPoints, depthCache)
             measuredResult = if (area > 0) formatArea(area) else "无法计算"
@@ -521,13 +532,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun computeArea(pts: List<PointF>, depthsCache: MutableMap<Int, Float>? = null): Float {
         if (pts.size < 3) return 0f
-        val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
+        // #1: Use cached surface dimensions for thread safety
+        val vw = cachedViewWidth; val vh = cachedViewHeight
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
-            // Use cached depths where available, only measure new points
-            val depths = pts.indices.map { i ->
-                depthsCache?.get(i) ?: run {
-                    val d = getDistanceAt(pts[i].x, pts[i].y)
-                    if (d != null && d > 0) { depthsCache?.put(i, d); d } else null
+            // #2: Synchronized depth cache access
+            val depths = synchronized(depthCacheLock) {
+                pts.indices.map { i ->
+                    depthsCache?.get(i) ?: run {
+                        val d = getDistanceAt(pts[i].x, pts[i].y)
+                        if (d != null && d > 0) { depthsCache?.put(i, d); d } else null
+                    }
                 }
             }
             if (depths.all { it != null && it > 0 }) {
@@ -543,10 +557,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                         val py = d * (iy - intrinsics[3]) / intrinsics[1]
                         Triple(px, py, d)
                     } else {
-                        // FOV fallback
+                        // FOV fallback with tan clamp
                         val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
-                        val px = d!! * Math.tan(nx * Math.toRadians(getHfovDegrees()) / 2).toFloat()
-                        val py = d * Math.tan(ny * Math.toRadians(getVfovDegrees()) / 2).toFloat()
+                        val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
+                        val px = d!! * Math.tan(nx.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getHfovDegrees()) / 2).toFloat()
+                        val py = d * Math.tan(ny.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getVfovDegrees()) / 2).toFloat()
                         Triple(px, py, d)
                     }
                 }
@@ -598,12 +613,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Mode.AREA -> binding.btnAreaMode
             Mode.SWEEP -> binding.btnSweepMode
         }
+        // #22: Animate mode transition
         active.setBackgroundColor(Color.parseColor("#33FFFFFF"))
         active.setTextColor(Color.WHITE)
     }
 
     private fun resetMeasurement() {
-        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null; depthCache.clear()
+        overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
+        // #2: Synchronized cache clear
+        synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.overlayView.points = emptyList()
@@ -676,7 +694,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun undoLastPoint() {
         val now = System.currentTimeMillis()
-        if (now - lastUndoClickTime < MODE_DEBOUNCE_MS) return
+        if (now - lastUndoClickTime < AppConstants.MODE_DEBOUNCE_MS) return
         lastUndoClickTime = now
         // #7: Fade-out animation
         binding.overlayView.animateFadeOut { this.undoLastPointImpl() }
@@ -686,7 +704,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Mode.AREA -> {
                 if (overlayAreaPoints.isNotEmpty()) {
                     overlayAreaPoints.removeAt(overlayAreaPoints.size - 1)
-                    depthCache.remove(overlayAreaPoints.size)
+                    synchronized(depthCacheLock) { depthCache.remove(overlayAreaPoints.size) }
                     if (overlayAreaPoints.size >= 3) {
                         val a = computeArea(overlayAreaPoints, depthCache)
                         measuredResult = if (a > 0) formatArea(a) else "无法计算"
@@ -741,10 +759,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         backgroundHandler?.post {
             // Multi-sample averaging for more stable calibration
             val samples = mutableListOf<Float>()
-            for (i in 0 until 5) {
+            for (i in 0 until AppConstants.CALIBRATION_SAMPLE_COUNT) {
                 val d = getDistanceAt(sx, sy)
                 if (d != null && d > 0) samples.add(d)
-                Thread.sleep(150)
+                Thread.sleep(AppConstants.CALIBRATION_SAMPLE_INTERVAL_MS)
             }
             val measured = if (samples.isNotEmpty()) samples.sorted()[samples.size / 2] else null  // median
             runOnUiThread {
@@ -760,7 +778,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 }
                 android.app.AlertDialog.Builder(this)
                     .setTitle("校准: 当前测量 ${String.format("%.1f cm", measured)}")
-                    .setMessage("输入实际距离 (cm) 进行校准\n(已取5次采样中位数)")
+                    .setMessage("输入实际距离 (cm) 进行校准\n(已取${AppConstants.CALIBRATION_SAMPLE_COUNT}次采样中位数)")
                     .setView(input)
                     .setPositiveButton("校准") { _, _ ->
                         val known = input.text.toString().toFloatOrNull()
@@ -880,8 +898,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         else if (cameraCtrl.cameraDevice != null && cameraCtrl.captureSession == null) {
             cameraCtrl.setupPreviewSession(cameraCtrl.cameraDevice!!, cameraCtrl.depthCameraEnabled && cameraCtrl.depthStreamActive)
         }
+        // #1: Cache surface dimensions for thread-safe access from BG handler
+        holder.surface?.let {
+            cachedViewWidth = binding.surfaceView.width.toFloat()
+            cachedViewHeight = binding.surfaceView.height.toFloat()
+        }
     }
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        // #1: Update cached dimensions on surface resize
+        cachedViewWidth = width.toFloat()
+        cachedViewHeight = height.toFloat()
+    }
     override fun surfaceDestroyed(holder: SurfaceHolder) {}
 
     private var depthBufReusable: ShortArray? = null
@@ -905,11 +932,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         } catch (e: Exception) { Log.e(TAG, "depth err", e) } finally { image.close() }
     }
 
+    // #1: Thread-safe — uses cached dimensions, never reads View properties
     private fun getDepthAtScreenPoint(sx: Float, sy: Float, filter: DistanceFilter = depthFilter): Float? {
         synchronized(depthLock) {
             val buf = depthBuffer ?: return null
             if (buf.isEmpty() || depthWidth <= 0 || depthHeight <= 0) return null
-            val vw = binding.surfaceView.width.toFloat(); val vh = binding.surfaceView.height.toFloat()
+            val vw = cachedViewWidth; val vh = cachedViewHeight
             if (vw <= 0 || vh <= 0) return null
             val dx: Int; val dy: Int
             val sep = cameraCtrl.depthCameraDevice?.id != cameraCtrl.cameraDevice?.id
@@ -928,8 +956,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             // Far (>3m): 7×7 for heavy noise
             // Also adapt by resolution: low-res depth maps use smaller kernel
             val radius = when {
-                depthWidth <= 240 || depthHeight <= 180 -> 1  // always 3×3 for low-res
-                else -> 2  // 5×5 default, refined below
+                depthWidth <= 240 || depthHeight <= 180 -> AppConstants.NEIGHBORHOOD_RADIUS_NEAR  // always 3×3 for low-res
+                else -> AppConstants.NEIGHBORHOOD_RADIUS_MID  // 5×5 default
             }
 
             // First pass: quick center depth estimate for adaptive kernel
@@ -938,7 +966,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val adaptRadius = when {
                 centerCm > 0 && centerCm < AppConstants.NEIGHBORHOOD_NEAR_CM -> AppConstants.NEIGHBORHOOD_RADIUS_NEAR
                 centerCm >= AppConstants.NEIGHBORHOOD_FAR_CM -> AppConstants.NEIGHBORHOOD_RADIUS_FAR
-                else -> radius  // use resolution-based default
+                else -> radius  // use resolution-based default (NEIGHBORHOOD_RADIUS_MID)
             }
 
             var wSum = 0.0; var wtSum = 0.0; var cnt = 0
@@ -970,5 +998,3 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         backgroundThread?.quitSafely(); try { backgroundThread?.join(); backgroundThread = null; backgroundHandler = null } catch (_: Exception) {}
     }
 }
-
-

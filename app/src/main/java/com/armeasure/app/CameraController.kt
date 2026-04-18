@@ -385,13 +385,16 @@ class CameraController(
         }
     }
 
- 
     /** Close only the depth camera, keep RGB preview running */
     fun closeDepthOnly() {
         try {
+            cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)
             depthReader?.close(); depthReader = null
             depthCameraDevice?.close(); depthCameraDevice = null
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        } finally {
+            cameraOpenCloseLock.release()
+        }
         depthStreamActive = false
     }
 
@@ -428,7 +431,8 @@ class CameraController(
             onReady()
         }
     }
-   fun close() {
+
+    fun close() {
         try {
             cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)
             captureSession?.close(); captureSession = null
@@ -442,16 +446,23 @@ class CameraController(
         }
     }
 
+    /**
+     * #4: chooseOptimalSize — match portrait ratio correctly.
+     * Camera sizes are reported in landscape (w > h), but we run in portrait mode.
+     * We compare landscape ratios: choices use w/h, target uses w/h (not h/w).
+     */
     private fun chooseOptimalSize(choices: Array<Size>, width: Int, height: Int): Size {
         if (choices.isEmpty()) return Size(1920, 1080)
         val realW = if (width > 1) width
         else context.resources.displayMetrics.widthPixels.coerceAtLeast(1)
         val realH = if (height > 1) height
         else context.resources.displayMetrics.heightPixels.coerceAtLeast(1)
+        // In portrait: realW is the short side, realH is the long side.
+        // Camera sizes are landscape: w is long side, h is short side.
+        // Match: camera.w/camera.h ≈ realH/realW (landscape ratios should be equal)
         val targetRatio = realH.toFloat() / realW
         return choices.minByOrNull {
             Math.abs(it.width.toFloat() / it.height - targetRatio)
         } ?: choices.first()
     }
 }
-

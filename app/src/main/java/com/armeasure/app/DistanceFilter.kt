@@ -57,6 +57,11 @@ class DistanceFilter(
         return applyKalman(sortBuffer[count / 2])
     }
 
+    /**
+     * Fix #6: Adaptive Kalman with linear (not quadratic) innovation scaling.
+     * Uses |innovation| × constant instead of innovation² × constant to prevent
+     * Kalman gain collapse when switching to a new measurement target.
+     */
     private fun applyKalman(z: Float): Float {
         tickCount++
         if (!kalmanInitialized) {
@@ -69,12 +74,9 @@ class DistanceFilter(
         val innovation = z - estimate
         val rAdaptive = if (tickCount > windowSize) {
             val base = initMeasureNoise * 0.5f
-            // Cap the dynamic component to prevent Kalman gain from collapsing
-            // to ~0 when the measurement point changes and innovation is large.
-            val dynamic = Math.min(
-                Math.abs(innovation) * Math.abs(innovation) * 0.01f,
-                initMeasureNoise * 2f
-            )
+            // Linear scaling: |innovation| × 0.5 — tracks new targets quickly
+            // while still suppressing noise for small deviations.
+            val dynamic = Math.abs(innovation) * 0.5f
             (base + dynamic).coerceIn(initMeasureNoise * 0.1f, initMeasureNoise * 3f)
         } else initMeasureNoise
         val gain = predCov / (predCov + rAdaptive)

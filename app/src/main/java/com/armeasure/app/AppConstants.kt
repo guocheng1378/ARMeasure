@@ -46,4 +46,21 @@ object AppConstants {
     // ── UI ──
     const val CROSSHAIR_SIZE = 20f
     const val PLACEMENT_CROSSHAIR_SIZE = 24f
+
+    // ── Timing / debounce ──
+    const val TAP_DEBOUNCE_MS = 400L
+    const val MODE_DEBOUNCE_MS = 300L
+    const val SETTLE_MS_DEPTH = 600L       // depth camera settling time after tap
+    const val SETTLE_MS_AF = 800L          // AF settling time after tap
+    const val CALIBRATION_SAMPLE_COUNT = 5
+    const val CALIBRATION_SAMPLE_INTERVAL_MS = 150L
+
+    // ── FOV projection ──
+    const val FOV_TAN_CLAMP = 0.95f        // clamp tan input to avoid infinity at edges
+
+    // ── Robust depth ──
+    const val ROBUST_MAD_MIN_THRESHOLD = 0.1f  // min MAD to trigger outlier rejection
+
+    // ── IMU velocity integration ──
+    const val VELOCITY_DT_MAX = 0.1        // max dt in seconds for velocity integration
 }

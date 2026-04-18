@@ -40,7 +40,8 @@ object MeasurementEngine {
     }
 
     /**
-     * Compute 3D distance between two screen points given their depths.
+     * #10: Compute 3D distance between two screen points given their depths.
+     * FOV input is clamped to avoid tan() blowup at screen edges.
      * @return distance in cm
      */
     fun compute3DDistance(
@@ -57,10 +58,12 @@ object MeasurementEngine {
         val hfov = Math.toRadians(hfovDeg)
         val vfov = Math.toRadians(vfovDeg)
 
-        val px1 = d1 * Math.tan(nx1 * hfov / 2).toFloat()
-        val py1 = d1 * Math.tan(ny1 * vfov / 2).toFloat()
-        val px2 = d2 * Math.tan(nx2 * hfov / 2).toFloat()
-        val py2 = d2 * Math.tan(ny2 * vfov / 2).toFloat()
+        // #10: Clamp angle to avoid tan() blowup at screen edges
+        val clampFactor = AppConstants.FOV_TAN_CLAMP.toDouble()
+        val px1 = d1 * Math.tan(nx1.toDouble().coerceIn(-clampFactor, clampFactor) * hfov / 2).toFloat()
+        val py1 = d1 * Math.tan(ny1.toDouble().coerceIn(-clampFactor, clampFactor) * vfov / 2).toFloat()
+        val px2 = d2 * Math.tan(nx2.toDouble().coerceIn(-clampFactor, clampFactor) * hfov / 2).toFloat()
+        val py2 = d2 * Math.tan(ny2.toDouble().coerceIn(-clampFactor, clampFactor) * vfov / 2).toFloat()
 
         val dx = px1 - px2
         val dy = py1 - py2
@@ -138,7 +141,9 @@ object MeasurementEngine {
     }
 
     /**
-     * Robust multi-sample depth: collect samples, reject outliers via MAD, return median.
+     * #9: Robust multi-sample depth: collect samples, reject outliers via MAD, return median.
+     * Uses a minimum MAD threshold to avoid rejecting samples when variance is near-zero
+     * (floating-point precision issue).
      * @param samples raw depth samples in cm (must be > 0)
      * @param madThreshold number of MADs to consider as outlier (default 2.0)
      * @return robust median depth in cm, or null if too few valid samples
@@ -151,7 +156,8 @@ object MeasurementEngine {
         // MAD: median of absolute deviations from median
         val deviations = valid.map { Math.abs(it - median) }.sorted()
         val mad = deviations[deviations.size / 2]
-        if (mad < 0.01f) return median // all samples essentially equal
+        // #9: Use absolute minimum threshold to avoid float-precision false rejections
+        if (mad < AppConstants.ROBUST_MAD_MIN_THRESHOLD) return median
 
         // Keep samples within madThreshold * 1.4826 * MAD (≈ standard deviation equivalent)
         val sigma = mad * 1.4826
@@ -189,7 +195,7 @@ object MeasurementEngine {
     }
 
     /**
-     * #6: Fit a plane to 3D points using RANSAC, then project onto best-fit plane for area.
+     * Fit a plane to 3D points using RANSAC, then project onto best-fit plane for area.
      * Returns area in cm² on the fitted plane, or falls back to direct Newell's method.
      * @param pts3d list of (x, y, z) in cm
      * @param ransacIterations number of RANSAC trials (default 50)

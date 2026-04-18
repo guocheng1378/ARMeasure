@@ -76,4 +76,18 @@ class DistanceFilterTest {
         filter.filter(1000f)
         assertTrue(filter.isWarmedUp())
     }
+
+    // ── #6: Linear Kalman tracks new targets quickly ──
+
+    @Test
+    fun `filter tracks large target switch within reasonable frames`() {
+        // #6: With linear R adaptation, filter should converge to new target
+        // faster than quadratic (which would collapse gain to ~0)
+        repeat(5) { filter.filter(1000f) } // converge to 1000
+        // Switch to 2000
+        var result = 0f
+        repeat(30) { result = filter.filter(2000f) }
+        // Should have converged close to 2000 within 30 frames
+        assertTrue("Filter should track target switch, got $result (expected ~2000)", result > 1800f)
+    }
 }

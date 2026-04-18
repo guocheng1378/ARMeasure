@@ -49,6 +49,18 @@ class MeasurementEngineTest {
     }
 
     @Test
+    fun `3D distance does not blow up at screen edges`() {
+        // #10: Edge pixels should not produce infinity due to tan() blowup
+        val dist = MeasurementEngine.compute3DDistance(
+            x1 = 0f, y1 = 0f, x2 = 1080f, y2 = 1920f,
+            d1 = 100f, d2 = 100f,
+            viewW = 1080f, viewH = 1920f,
+            hfovDeg = 65.0, vfovDeg = 50.0
+        )
+        assertTrue("Edge distance should be finite and reasonable, got $dist", dist > 0f && dist < 1000f)
+    }
+
+    @Test
     fun `polygon area of triangle`() {
         val pts = listOf(Pair(0f, 0f), Pair(10f, 0f), Pair(0f, 10f))
         val area = MeasurementEngine.computePolygonArea(pts)

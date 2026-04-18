@@ -1,6 +1,6 @@
 package com.armeasure.app
 
-import android.animation.ValueAnimator
+import android.animation.*
 import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
@@ -67,8 +67,9 @@ class MeasureOverlayView @JvmOverloads constructor(
     private val crossActiveP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2f
     }
+    // #17: Use green color for placement cross to differentiate from the selected point
     private val placeCrossP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.5f
+        color = Color.parseColor("#00FF88"); style = Paint.Style.STROKE; strokeWidth = 1.5f
     }
     private val areaFillP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#226699FF"); style = Paint.Style.FILL }
     private val areaFillLiveP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#156699FF"); style = Paint.Style.FILL }
@@ -88,19 +89,26 @@ class MeasureOverlayView @JvmOverloads constructor(
     private val rPath = Path()
     private val arrowPath = Path()
 
+    // ── Line expand animation (#18: add isRunning guard) ──
     var lineExpandProgress = 1f
     private val lineExpandAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 350; interpolator = DecelerateInterpolator(2.5f)
         addUpdateListener { lineExpandProgress = it.animatedValue as Float; invalidate() }
     }
-    fun animateLineExpand() { lineExpandProgress = 0f; lineExpandAnimator.cancel(); lineExpandAnimator.start() }
+    fun animateLineExpand() {
+        if (lineExpandAnimator.isRunning) lineExpandAnimator.cancel()
+        lineExpandProgress = 0f
+        lineExpandAnimator.start()
+    }
 
+    // ── Fade out animation (#19: cancel before start) ──
     var fadeOutAlpha = 1f
     private val fadeOutAnimator = ValueAnimator.ofFloat(1f, 0f).apply {
         duration = 200; interpolator = AccelerateInterpolator(2f)
         addUpdateListener { fadeOutAlpha = it.animatedValue as Float; invalidate() }
     }
     fun animateFadeOut(onEnd: () -> Unit) {
+        if (fadeOutAnimator.isRunning) fadeOutAnimator.cancel()
         fadeOutAnimator.removeAllListeners()
         fadeOutAnimator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(a: android.animation.Animator) { fadeOutAlpha = 1f; onEnd() }
@@ -108,12 +116,44 @@ class MeasureOverlayView @JvmOverloads constructor(
         fadeOutAnimator.start()
     }
 
+    // ── Pulse animation (#20: clear pulseCenter on end) ──
     private var pulseRadius = 0f; private var pulseAlpha = 0; private var pulseCenter: PointF? = null
     private val pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 500; interpolator = DecelerateInterpolator(2f)
-        addUpdateListener { val f = it.animatedFraction; pulseRadius = 12f + f * 30f; pulseAlpha = ((1f - f) * 80).toInt(); invalidate() }
+        addUpdateListener {
+            val f = it.animatedFraction
+            pulseRadius = 12f + f * 30f
+            pulseAlpha = ((1f - f) * 80).toInt()
+            invalidate()
+        }
     }
-    fun triggerPulse(x: Float, y: Float) { pulseCenter = PointF(x, y); pulseAnimator.cancel(); pulseAnimator.start() }
+    fun triggerPulse(x: Float, y: Float) {
+        if (pulseAnimator.isRunning) pulseAnimator.cancel()
+        pulseCenter = PointF(x, y)
+        pulseAnimator.removeAllListeners()
+        pulseAnimator.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(a: android.animation.Animator) { pulseCenter = null }
+        })
+        pulseAnimator.start()
+    }
+
+    // ── Mode transition animation (#22) ──
+    private var activeButtonAlpha = 1f
+    private val modeTransitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 150; interpolator = DecelerateInterpolator(2f)
+        addUpdateListener { activeButtonAlpha = it.animatedValue as Float; invalidate() }
+    }
+
+    // ── Area point pop-in animation (#23) ──
+    private var newPointScale = 1f
+    private val pointPopAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 200; interpolator = DecelerateInterpolator(2.5f)
+        addUpdateListener { newPointScale = 0.3f + 0.7f * (it.animatedValue as Float); invalidate() }
+    }
+    fun animateNewPoint() {
+        if (pointPopAnimator.isRunning) pointPopAnimator.cancel()
+        pointPopAnimator.start()
+    }
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean { onScale?.invoke(d.scaleFactor); return true }
@@ -158,15 +198,37 @@ class MeasureOverlayView @JvmOverloads constructor(
             }
         }
 
-        for (p in points) { canvas.drawCircle(p.x, p.y, 4f, dotP); canvas.drawCircle(p.x, p.y, 10f, dotRingP) }
+        // Draw points with pop-in animation for the last area point (#23)
+        for (i in points.indices) {
+            val p = points[i]
+            val isLast = i == points.size - 1 && pointPopAnimator.isRunning
+            if (isLast) {
+                canvas.save()
+                canvas.scale(newPointScale, newPointScale, p.x, p.y)
+            }
+            canvas.drawCircle(p.x, p.y, 4f, dotP); canvas.drawCircle(p.x, p.y, 10f, dotRingP)
+            if (isLast) canvas.restore()
+        }
+        for (i in areaPoints.indices) {
+            val p = areaPoints[i]
+            val isLast = i == areaPoints.size - 1 && pointPopAnimator.isRunning
+            if (isLast) {
+                canvas.save()
+                canvas.scale(newPointScale, newPointScale, p.x, p.y)
+            }
+            canvas.drawCircle(p.x, p.y, 4f, dotP); canvas.drawCircle(p.x, p.y, 10f, dotRingP)
+            if (isLast) canvas.restore()
+        }
 
         pulseCenter?.let { pc -> if (pulseAnimator.isRunning) { pulseRingP.alpha = pulseAlpha; canvas.drawCircle(pc.x, pc.y, pulseRadius, pulseRingP) } }
 
-        val cx = width / 2f; val cy = height / 2f
-        val cp = if (surfaceDetected) crossActiveP else crossP
-        val cs = if (surfaceDetected) 16f else 20f
-        canvas.drawLine(cx - cs, cy, cx + cs, cy, cp); canvas.drawLine(cx, cy - cs, cx, cy + cs, cp)
-        if (surfaceDetected) canvas.drawCircle(cx, cy, 3f, dotP)
+        // #16: Only draw crosshair when surfaceDetected (hide default crosshair otherwise)
+        if (surfaceDetected) {
+            val cx = width / 2f; val cy = height / 2f
+            val cs = AppConstants.CROSSHAIR_SIZE
+            canvas.drawLine(cx - cs, cy, cx + cs, cy, crossActiveP); canvas.drawLine(cx, cy - cs, cx, cy + cs, crossActiveP)
+            canvas.drawCircle(cx, cy, 3f, dotP)
+        }
 
         if (placingSecondPoint && points.size == 1) {
             canvas.drawLine(points[0].x - 24, points[0].y, points[0].x + 24, points[0].y, placeCrossP)
@@ -197,12 +259,30 @@ class MeasureOverlayView @JvmOverloads constructor(
         c.drawText(text, x, ly + rRect.height()/2f, txtP)
     }
 
+    // #21: Sweep trail with quadratic Bezier smoothing
     private fun drawSweep(c: Canvas) {
         val cx = width/2f; val cy = height/2f
         if (sweepHistory.size >= 2) {
-            rPath.reset(); val maxD = sweepHistory.maxOfOrNull{it.second} ?: 200f; val minD = sweepHistory.minOfOrNull{it.second} ?: 0f
-            val range = (maxD - minD).coerceAtLeast(50f); val cBot = height - 60f; val cTop = height - 200f
-            for (i in sweepHistory.indices) { val (sx, dist) = sweepHistory[i]; val py = cBot - ((dist-minD)/range)*(cBot-cTop); if (i==0) rPath.moveTo(sx,py) else rPath.lineTo(sx,py) }
+            rPath.reset()
+            val cBot = height - 60f; val cTop = height - 200f
+            val maxD = sweepHistory.maxOfOrNull { it.second } ?: 200f
+            val minD = sweepHistory.minOfOrNull { it.second } ?: 0f
+            val range = (maxD - minD).coerceAtLeast(50f)
+
+            val firstX = sweepHistory[0].first
+            val firstY = cBot - ((sweepHistory[0].second - minD) / range) * (cBot - cTop)
+            rPath.moveTo(firstX, firstY)
+
+            for (i in 1 until sweepHistory.size) {
+                val prevX = sweepHistory[i - 1].first
+                val prevY = cBot - ((sweepHistory[i - 1].second - minD) / range) * (cBot - cTop)
+                val currX = sweepHistory[i].first
+                val currY = cBot - ((sweepHistory[i].second - minD) / range) * (cBot - cTop)
+                // Quadratic Bezier: control point is midpoint
+                val cpx = (prevX + currX) / 2f
+                val cpy = (prevY + currY) / 2f
+                rPath.quadTo(prevX, prevY, cpx, cpy)
+            }
             c.drawPath(rPath, sweepTrailP)
         }
         c.drawLine(cx-40, cy, cx+40, cy, sweepCP); c.drawLine(cx, cy-40, cx, cy+40, sweepCP); c.drawCircle(cx, cy, 8f, sweepDotP)
