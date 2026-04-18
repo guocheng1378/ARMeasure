@@ -3,6 +3,7 @@ package com.armeasure.app
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.*
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -479,6 +480,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
                     binding.overlayView.lineDistanceLabels = listOf(displayText)
                     updateOverlay(); firstPoint = null
+                    binding.overlayView.animateLineExpand()  \/\/ #1: expand animation
                     saveToHistory(measuredResult, "两点")
                 }
             }
@@ -555,6 +557,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.btnSweepMode.setOnClickListener { setMode(Mode.SWEEP) }
         binding.btnDepthToggle.setOnClickListener { toggleDepthCamera() }
         binding.btnUndo.setOnClickListener { undoLastPoint() }
+        // #6: Pinch zoom
+        binding.overlayView.onScale = { sf ->
+            val sv = binding.surfaceView; val ns = (sv.scaleX * sf).coerceIn(0.5f, 5f)
+            sv.scaleX = ns; sv.scaleY = ns; sv.pivotX = sv.width / 2f; sv.pivotY = sv.height / 2f
+        }
         binding.btnCalibrate.setOnClickListener { startCalibration() }
         binding.btnHistory.setOnClickListener { showHistory() }
         binding.tvDistance.setOnLongClickListener { cycleUnit(); true }
@@ -565,7 +572,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun setMode(mode: Mode) {
-        currentMode = mode; calibrating = false; resetMeasurement()
+        currentMode = mode; calibrating = false
         binding.tvMode.text = when (mode) {
             Mode.POINT -> "点击测距"
             Mode.LINE -> "两点测距"
@@ -573,13 +580,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Mode.SWEEP -> "扫掠测距"
         }
         binding.overlayView.sweepMode = (mode == Mode.SWEEP)
-        listOf(binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode).forEach { it.setBackgroundColor(0x00000000) }
-        when (mode) {
+        val allBtns = listOf(binding.btnPointMode, binding.btnLineMode, binding.btnAreaMode, binding.btnSweepMode)
+        allBtns.forEach { it.setBackgroundColor(0x00000000); it.setTextColor(Color.parseColor("#AAAAAA")) }
+        val active = when (mode) {
             Mode.POINT -> binding.btnPointMode
             Mode.LINE -> binding.btnLineMode
             Mode.AREA -> binding.btnAreaMode
             Mode.SWEEP -> binding.btnSweepMode
-        }.setBackgroundColor(0x3300FF88.toInt())
+        }
+        active.setBackgroundColor(Color.parseColor("#33FFFFFF"))
+        active.setTextColor(Color.WHITE)
     }
 
     private fun resetMeasurement() {
@@ -655,6 +665,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun undoLastPoint() {
+        // #7: Fade-out animation
+        binding.overlayView.animateFadeOut { this.undoLastPointImpl() }
+    }
+    private fun undoLastPointImpl() {
         when (currentMode) {
             Mode.AREA -> {
                 if (overlayAreaPoints.isNotEmpty()) {
