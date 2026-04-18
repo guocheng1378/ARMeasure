@@ -305,11 +305,16 @@ class MeasureOverlayView @JvmOverloads constructor(
         pulseCenter?.let { pc -> if (pulseAnimator.isRunning) { pulseRingP.alpha = pulseAlpha; canvas.drawCircle(pc.x, pc.y, pulseRadius, pulseRingP) } }
         rippleCenter?.let { rc -> if (rippleAnimator.isRunning) { rippleP.alpha = rippleAlpha; canvas.drawCircle(rc.x, rc.y, rippleRadius, rippleP) } }
 
-        if (surfaceDetected) {
+        // ── Center crosshair: always visible as aim indicator ──
+        if (!lineConfirmed && !(placingSecondPoint && points.size == 1)) {
             val cx = width / 2f; val cy = height / 2f
             val cs = AppConstants.CROSSHAIR_SIZE
-            canvas.drawLine(cx - cs, cy, cx + cs, cy, crossActiveP); canvas.drawLine(cx, cy - cs, cx, cy + cs, crossActiveP)
+            crossP.alpha = 160
+            crossP.strokeWidth = 1.5f
+            canvas.drawLine(cx - cs, cy, cx + cs, cy, crossP)
+            canvas.drawLine(cx, cy - cs, cx, cy + cs, crossP)
             canvas.drawCircle(cx, cy, 3f, dotP)
+            crossP.alpha = 255; crossP.strokeWidth = 1.5f
         }
 
         // First point marker is now drawn via drawEndpointMarker in the placingSecondPoint block above
