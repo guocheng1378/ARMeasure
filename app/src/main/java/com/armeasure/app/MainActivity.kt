@@ -247,7 +247,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     // ── Measurement ──────────────────────────────────────────
 
-    private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null): Float? {
+    private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null, skipImu: Boolean = false): Float? {
         var raw: Float? = null
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy, depthFilterOverride ?: depthFilter)
         val tofDist = tofHelper.getDistanceCm()
@@ -269,7 +269,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         }
         if (raw == null || raw <= 0) { val d = currentFocusDistance; if (d > 0) raw = d * 100f }
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
-        if (raw != null && raw > 0 && imuHelper.isAvailable()) {
+        if (!skipImu && raw != null && raw > 0 && imuHelper.isAvailable()) {
             val vw = cachedViewWidth; val vh = cachedViewHeight
             return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh, raw) else imuHelper.compensateDepth(raw)
         }
@@ -278,7 +278,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     data class DepthResult(val depthCm: Float, val uncertaintyCm: Float)
 
-    private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = AppConstants.DEPTH_SAMPLE_COUNT, intervalMs: Long = AppConstants.DEPTH_SAMPLE_INTERVAL_MS, onProgress: ((Int, Int) -> Unit)? = null, onComplete: (DepthResult?) -> Unit) {
+    private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = AppConstants.DEPTH_SAMPLE_COUNT, intervalMs: Long = AppConstants.DEPTH_SAMPLE_INTERVAL_MS, skipImu: Boolean = false, onProgress: ((Int, Int) -> Unit)? = null, onComplete: (DepthResult?) -> Unit) {
         val localFilter = DistanceFilter(
             windowSize = AppConstants.DEPTH_WINDOW_SIZE, alpha = 0.4f,
             maxJumpMm = AppConstants.DEPTH_MAX_JUMP_MM, maxRangeMm = AppConstants.DEPTH_MAX_RANGE_MM,
@@ -297,7 +297,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 onComplete(if (robust != null && robust > 0) DepthResult(robust, unc) else null)
                 return
             }
-            val d = getDistanceAt(sx, sy, localFilter)
+            val d = getDistanceAt(sx, sy, localFilter, skipImu)
             if (d != null && d > 0) samples.add(d)
             sampleIndex++
             onProgress?.invoke(sampleIndex, sampleCount)
@@ -760,14 +760,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun performCalibration(sx: Float, sy: Float) {
-        backgroundHandler?.post {
-            val samples = mutableListOf<Float>()
-            for (i in 0 until AppConstants.CALIBRATION_SAMPLE_COUNT) {
-                val d = getDistanceAt(sx, sy)
-                if (d != null && d > 0) samples.add(d)
-                Thread.sleep(AppConstants.CALIBRATION_SAMPLE_INTERVAL_MS)
-            }
-            val measured = if (samples.isNotEmpty()) samples.sorted()[samples.size / 2] else null
+        // Use same pipeline as two-point: collectDepthSamples with local filter, skip IMU correction
+        collectDepthSamples(sx, sy,
+            sampleCount = AppConstants.CALIBRATION_SAMPLE_COUNT,
+            intervalMs = AppConstants.CALIBRATION_SAMPLE_INTERVAL_MS,
+            skipImu = true
+        ) { result ->
+            val measured = result?.depthCm
             runOnUiThread {
                 if (measured == null || measured <= 0) { Toast.makeText(this, "无法获取距离，请重试", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
                 val input = android.widget.EditText(this).apply {
