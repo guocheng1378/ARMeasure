@@ -117,7 +117,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             // Also use firstDistance as fallback for d1 (anchor depth was well-sampled)
             val depth1 = d1 ?: firstDistance
 
-            if (depth1 > 0 && depth1 < 1000f && d2 != null && d2 > 0 && d2 < 1000f) {
+            if (depth1 > 0 && depth1 < 5000f && d2 != null && d2 > 0 && d2 < 5000f) {
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val arr = cameraCtrl.rgbSensorActiveArray
                 val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
@@ -362,9 +362,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }
             depthMapCm != null && depthMapCm > 0 -> depthMapCm
             else -> {
-                // No depth map — try AF focus distance
+                // No depth map — try AF focus distance (hyperfocal model: ~1/diopter)
                 val d = currentFocusDistance
-                if (d > 0) d * 100f else tofCm
+                if (d > 0.1f) {
+                    // d is in diopters (1/m). Clamp to reasonable range: 10cm ~ 10m
+                    val cm = (1f / d) * 100f
+                    if (cm in 5f..2000f) cm else tofCm
+                } else tofCm
             }
         }
 
@@ -579,10 +583,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }) { result ->
                 firstDistance = result?.depthCm ?: 0f
                 firstUncertainty = result?.uncertaintyCm ?: 0f
-                // Store 3D world coordinates — anchor sticks to surface as camera moves
-                if (firstDistance > 0) {
-                    firstWorld3D = screenToWorld3D(cx, cy, firstDistance)
+                // Validate depth: reject near-zero, negative, or out-of-range
+                if (firstDistance < 5f || firstDistance > 2000f) {
+                    firstDistance = 0f
+                    hapticWarning()
+                    runOnUiThread {
+                        binding.progressBar.visibility = android.view.View.GONE
+                        binding.tvDistance.text = "⚠️ 无法获取深度，请对准平面重试"
+                        binding.overlayView.placingSecondPoint = false
+                        firstPoint = null
+                        updateOverlay()
+                    }
+                    return@collectDepthSamples
                 }
+                // Store 3D world coordinates — anchor sticks to surface as camera moves
+                firstWorld3D = screenToWorld3D(cx, cy, firstDistance)
                 runOnUiThread {
                     binding.overlayView.firstPointDepthCm = firstDistance
                     binding.tvDistance.text = "移动手机瞄准第二点 → 点击确认"
@@ -625,6 +640,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     PointF(p1.x, p1.y)
                 }
                 val p2Screen = PointF(cx, cy)
+
+                // ★ Validate both depths before computing distance
+                if (d1 < 5f || d2 < 5f || d1 > 2000f || d2 > 2000f) {
+                    hapticWarning()
+                    runOnUiThread {
+                        binding.progressBar.visibility = android.view.View.GONE
+                        binding.tvDistance.text = "⚠️ 深度获取失败，请对准平面重试"
+                        binding.overlayView.liveDistanceCm = -1f
+                        binding.overlayView.previewAnchor = null
+                        binding.overlayView.firstPointDepthCm = -1f
+                        binding.overlayView.secondPointDepthCm = -1f
+                        binding.overlayView.lineConfirmed = false
+                        overlayPoints.clear(); updateOverlay()
+                        firstPoint = null; firstWorld3D = null
+                    }
+                    return@collectDepthSamples
+                }
 
                 val dist = if (d1 > 0 && d2 > 0) {
                     if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
