@@ -711,7 +711,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
         binding.overlayView.lineDistanceLabels = emptyList(); binding.overlayView.lineConfirmed = false
         binding.overlayView.confirmFlash = false
-                                        depthFilter.reset(); tofHelper.reset()
+        depthFilter.reset(); tofHelper.reset()
         if (imuHelper.isAvailable()) imuHelper.reset()
         currentFocusDistance = -1f; depthBuffer = null
         synchronized(temporalLock) { temporalFrames.clear() }
