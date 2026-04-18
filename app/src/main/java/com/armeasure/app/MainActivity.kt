@@ -610,24 +610,34 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
             collectDepthSamples(cx, cy, onProgress = { _, _ -> }) { result2 ->
                 val d2 = result2?.depthCm ?: 0f
-                val d1 = getRawDepthAt(p1.x, p1.y) ?: firstDistance
+                // Use firstDistance (properly sampled) as primary, not re-reading stale buffer
+                val d1 = firstDistance
 
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val arr = cameraCtrl.rgbSensorActiveArray
                 val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
 
+                // ★ Use projected screen position for distance (Apple-like: anchor sticks to surface)
+                val p1Screen = if (firstWorld3D != null) {
+                    val proj = world3DToScreen(firstWorld3D!!.first, firstWorld3D!!.second, firstWorld3D!!.third)
+                    PointF(proj.first, proj.second)
+                } else {
+                    PointF(p1.x, p1.y)
+                }
+                val p2Screen = PointF(cx, cy)
+
                 val dist = if (d1 > 0 && d2 > 0) {
                     if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                        MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, cx, cy, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                        MeasurementEngine.compute3DDistanceIntrinsic(p1Screen.x, p1Screen.y, cx, cy, d1, d2, vw, vh, intrinsics, imgW, imgH)
                     } else {
-                        MeasurementEngine.compute3DDistance(p1.x, p1.y, cx, cy, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                        MeasurementEngine.compute3DDistance(p1Screen.x, p1Screen.y, cx, cy, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
                     }
                 } else 0f
 
                 val rawUnc = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, intrinsics, imgW, imgH)
+                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1Screen.x, p1Screen.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, intrinsics, imgW, imgH)
                 } else {
-                    MeasurementEngine.compute3DDistanceUncertaintyFOV(p1.x, p1.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    MeasurementEngine.compute3DDistanceUncertaintyFOV(p1Screen.x, p1Screen.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
                 val motionConfidence = when {
                     !imuAvail -> 1f; motion?.excessive == true -> 1.5f
@@ -635,9 +645,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     else -> 1f
                 }
                 val totalUnc = rawUnc * motionConfidence
-
-                val p1Screen = PointF(p1.x, p1.y)
-                val p2Screen = PointF(cx, cy)
 
                 binding.overlayView.liveDistanceCm = -1f
                 binding.overlayView.previewAnchor = null
