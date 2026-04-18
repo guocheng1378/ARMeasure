@@ -902,9 +902,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                             if (v in 1..65533) v.toFloat() else null
                         } else null
                     }
-                    if (vals.size >= 2) { vals.sort(); vals[vals.size / 2] } // median
-                    else buf[dy * depthWidth + dx].toInt() and 0xFFFF.toFloat()
-                } else buf[dy * depthWidth + dx].toInt() and 0xFFFF.toFloat()
+                    if (vals.size >= 2) { val sorted = vals.sorted(); sorted[sorted.size / 2] }
+                    else (buf[dy * depthWidth + dx].toInt() and 0xFFFF).toFloat()
+                } else (buf[dy * depthWidth + dx].toInt() and 0xFFFF).toFloat()
             }
 
             // Adaptive kernel size
