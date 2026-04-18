@@ -121,7 +121,7 @@ class DistanceFilter(
         for (i in 0 until count) vals[i] = medianBuffer[i]
         vals.sort()
         val mean = vals.sum() / count
-        val variance = vals.sumOf { (it - mean) * (it - mean) } / count
+        val variance = vals.sumOf { ((it - mean) * (it - mean)).toDouble() } / count
         return kotlin.math.sqrt(variance) < thresholdMm
     }
 

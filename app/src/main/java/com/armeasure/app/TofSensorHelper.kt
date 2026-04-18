@@ -174,7 +174,7 @@ class TofSensorHelper(
         if (mean <= 0) return 0.1f
 
         // 变异系数 = 标准差 / 均值
-        val variance = readings.sumOf { (it - mean) * (it - mean) }.toFloat() / readings.size
+        val variance = readings.sumOf { ((it - mean) * (it - mean)).toDouble() }.toFloat() / readings.size
         val stddev = kotlin.math.sqrt(variance)
         val cv = stddev / mean
 
@@ -203,7 +203,7 @@ class TofSensorHelper(
         if (readings.size < 3) return 400f // 数据不足，返回大方差(20cm σ)
 
         val mean = readings.average().toFloat()
-        val variance = readings.sumOf { (it - mean) * (it - mean) }.toFloat() / (readings.size - 1)
+        val variance = readings.sumOf { ((it - mean) * (it - mean)).toDouble() }.toFloat() / (readings.size - 1)
 
         // 下限: 即使非常稳定，方差不低于 4 (2cm σ)
         // 上限: 即使非常不稳定，方差不超过 900 (30cm σ)
