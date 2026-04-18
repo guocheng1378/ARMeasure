@@ -82,6 +82,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         tofHelper = TofSensorHelper(sm)
         imuHelper = ImuFusionHelper(sm)
         binding.overlayView.onTap = { x, y -> onScreenTapped(x, y) }
+        binding.overlayView.onMove = { x, y ->
+            if (binding.overlayView.placingSecondPoint) {
+                binding.overlayView.liveCrosshair = PointF(x, y)
+                binding.overlayView.invalidate()
+            }
+        }
         binding.overlayView.onSweepMove = { x, y -> onSweepMoved(x, y) }
         binding.surfaceView.holder.addCallback(this)
         tofHelper.detect()
@@ -396,6 +402,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
             // Apple-style: pulse + clear placement state
             binding.overlayView.placingSecondPoint = false
+            binding.overlayView.liveCrosshair = null
             binding.overlayView.triggerPulse(x, y)
             // Check IMU motion between two taps
             val imuAvail = imuHelper.isAvailable()
@@ -559,6 +566,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.sweepHistory = emptyList()
         binding.overlayView.lineDistanceLabels = emptyList()
         binding.overlayView.placingSecondPoint = false
+        binding.overlayView.liveCrosshair = null
         // Reset filter states so next measurement starts fresh (not from old Kalman/ToF momentum)
         depthFilter.reset()
         tofHelper.reset()

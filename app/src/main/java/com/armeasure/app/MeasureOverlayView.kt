@@ -9,12 +9,9 @@ import android.view.View
 import android.view.animation.DecelerateInterpolator
 
 /**
- * Apple Measure-style overlay with:
- * - Solid lines with subtle glow (not dashed)
- * - White dot endpoints with animated rings
- * - Floating distance label in capsule above line midpoint
- * - Animated crosshair when placing points
- * - Perspective-aware rendering hints
+ * Apple Measure-style overlay.
+ * P0: thin lines, small arrows, small dots, extension lines, smaller label
+ * P1: live preview line during placement
  */
 class MeasureOverlayView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
@@ -28,91 +25,105 @@ class MeasureOverlayView @JvmOverloads constructor(
     var sweepDistanceCm: Float = -1f
     var sweepHistory: List<Pair<Float, Float>> = emptyList()
 
-    // Apple-style: line distance labels (one per line, in display text)
     var lineDistanceLabels: List<String> = emptyList()
 
-    // Placement state for animated feedback
+    // Placement state
     var placingSecondPoint: Boolean = false
-    var placementCrosshair: PointF? = null  // live crosshair position during placement
+    /** Live crosshair position during placement (set by MainActivity) */
+    var liveCrosshair: PointF? = null
 
     var onTap: ((Float, Float) -> Unit)? = null
+    var onMove: ((Float, Float) -> Unit)? = null
     var onSweepMove: ((Float, Float) -> Unit)? = null
 
-    // ── Apple-style paint palette ──
+    // ── Apple-dimension-line paint palette ──
 
-    // Line: white-ish with subtle green tint, solid
+    // Main line: thin white solid
     private val lineP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 3.5f
+        strokeWidth = 1.8f
         strokeCap = Paint.Cap.ROUND
     }
-    // Line glow: behind the main line
+    // Line glow: very subtle
     private val lineGlowP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#40FFFFFF")
+        color = Color.parseColor("#30FFFFFF")
         style = Paint.Style.STROKE
-        strokeWidth = 12f
+        strokeWidth = 6f
         strokeCap = Paint.Cap.ROUND
-        maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
+        maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.NORMAL)
     }
-    // Endpoint dot: white filled
+    // Extension lines: thin perpendicular lines from endpoints
+    private val extLineP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#60FFFFFF")
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+    }
+    // Endpoint dot: small white filled
     private val dotP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.FILL
     }
-    // Endpoint ring: subtle outer ring
+    // Endpoint ring: thin outer ring
     private val dotRingP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#80FFFFFF")
         style = Paint.Style.STROKE
-        strokeWidth = 2f
+        strokeWidth = 1.5f
     }
-    // Animated pulse ring (expanding on tap)
+    // Pulse ring
     private val pulseRingP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#60FFFFFF")
         style = Paint.Style.STROKE
-        strokeWidth = 2f
-    }
-    // Distance label text
-    private val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textSize = 38f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        textAlign = Paint.Align.CENTER
-    }
-    // Distance label background capsule
-    private val txtBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#CC000000")
-        style = Paint.Style.FILL
-    }
-    // Capsule border
-    private val txtBorderP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#40FFFFFF")
-        style = Paint.Style.STROKE
         strokeWidth = 1.5f
     }
-    // Crosshair (center + when placing)
-    private val crossP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#80FFFFFF")
-        style = Paint.Style.STROKE
-        strokeWidth = 1.5f
-    }
-    // Arrow head: filled triangle at line endpoints
+    // Arrow head
     private val arrowP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.FILL
     }
-    // Placement crosshair: brighter, animated
+    // Live preview line (first point → crosshair)
+    private val previewP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#50FFFFFF")
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f
+        pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+    }
+    // Distance label text: smaller, medium weight
+    private val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 26f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+        textAlign = Paint.Align.CENTER
+    }
+    // Label background capsule
+    private val txtBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#B3000000")  // 70% opacity
+        style = Paint.Style.FILL
+    }
+    // Capsule border
+    private val txtBorderP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#30FFFFFF")
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+    }
+    // Center crosshair
+    private val crossP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#60FFFFFF")
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f
+    }
+    // Placement crosshair
     private val placeCrossP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 2f
+        strokeWidth = 1.5f
     }
     // Area fill
     private val areaFillP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#226699FF")
         style = Paint.Style.FILL
     }
-    // Sweep paints
+    // Sweep paints (unchanged)
     private val sweepCP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#FFCC00"); style = Paint.Style.STROKE; strokeWidth = 3f
     }
@@ -133,23 +144,23 @@ class MeasureOverlayView @JvmOverloads constructor(
     private val rRect = Rect()
     private val rPath = Path()
     private val arrowPath = Path()
+    private val extPath = Path()
 
-    // ── Pulse animation state ──
+    // ── Pulse animation ──
     private var pulseRadius = 0f
     private var pulseAlpha = 0
     private var pulseCenter: PointF? = null
     private val pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 600
+        duration = 500
         interpolator = DecelerateInterpolator(2f)
         addUpdateListener {
             val frac = it.animatedFraction
-            pulseRadius = 18f + frac * 40f
-            pulseAlpha = ((1f - frac) * 100).toInt()
+            pulseRadius = 12f + frac * 30f
+            pulseAlpha = ((1f - frac) * 80).toInt()
             invalidate()
         }
     }
 
-    /** Trigger the expanding ring pulse at the given point */
     fun triggerPulse(x: Float, y: Float) {
         pulseCenter = PointF(x, y)
         pulseAnimator.cancel()
@@ -169,19 +180,24 @@ class MeasureOverlayView @JvmOverloads constructor(
             canvas.drawPath(rPath, areaFillP)
         }
 
-        // Lines — Apple style: glow + solid + arrows at both ends
+        // Lines: glow → solid → extension lines → arrows
         for (i in lines.indices) {
             val (p1, p2) = lines[i]
-            // Glow layer
             canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineGlowP)
-            // Main solid line
             canvas.drawLine(p1.x, p1.y, p2.x, p2.y, lineP)
-            // Arrow heads pointing inward (Apple dimension-line style)
+            drawExtensionLines(canvas, p1.x, p1.y, p2.x, p2.y)
             drawArrowHead(canvas, p1.x, p1.y, p2.x, p2.y)
             drawArrowHead(canvas, p2.x, p2.y, p1.x, p1.y)
         }
 
-        // Distance labels above lines (Apple-style capsule)
+        // Live preview line (first point → crosshair)
+        if (placingSecondPoint && points.size == 1 && liveCrosshair != null) {
+            val p1 = points[0]
+            val hp = liveCrosshair!!
+            canvas.drawLine(p1.x, p1.y, hp.x, hp.y, previewP)
+        }
+
+        // Labels
         for (i in lines.indices) {
             if (i < lineDistanceLabels.size) {
                 val (p1, p2) = lines[i]
@@ -189,13 +205,13 @@ class MeasureOverlayView @JvmOverloads constructor(
             }
         }
 
-        // Endpoint dots — Apple style: white fill + ring
+        // Endpoint dots: small white + thin ring
         for (p in points) {
-            canvas.drawCircle(p.x, p.y, 8f, dotP)
-            canvas.drawCircle(p.x, p.y, 16f, dotRingP)
+            canvas.drawCircle(p.x, p.y, 4f, dotP)
+            canvas.drawCircle(p.x, p.y, 10f, dotRingP)
         }
 
-        // Pulse animation
+        // Pulse
         pulseCenter?.let { pc ->
             if (pulseAnimator.isRunning) {
                 pulseRingP.alpha = pulseAlpha
@@ -203,57 +219,63 @@ class MeasureOverlayView @JvmOverloads constructor(
             }
         }
 
-        // Center crosshair (always visible)
+        // Center crosshair
         val cx = width / 2f
         val cy = height / 2f
-        canvas.drawLine(cx - 24, cy, cx + 24, cy, crossP)
-        canvas.drawLine(cx, cy - 24, cx, cy + 24, crossP)
+        canvas.drawLine(cx - 20, cy, cx + 20, cy, crossP)
+        canvas.drawLine(cx, cy - 20, cx, cy + 20, crossP)
 
-        // Placement crosshair (when waiting for second point)
+        // First point crosshair (placing state)
         if (placingSecondPoint && points.size == 1) {
             val px = points[0].x
             val py = points[0].y
-            // Draw a brighter, larger crosshair at the first point
-            canvas.drawLine(px - 30, py, px + 30, py, placeCrossP)
-            canvas.drawLine(px, py - 30, px, py + 30, placeCrossP)
-            canvas.drawCircle(px, py, 5f, dotP)
+            canvas.drawLine(px - 24, py, px + 24, py, placeCrossP)
+            canvas.drawLine(px, py - 24, px, py + 24, placeCrossP)
         }
     }
 
     /**
-     * Draw an arrow head at (fromX, fromY) pointing toward (toX, toY).
-     * Apple-style: small filled triangle, ~14px long.
+     * Extension lines: short perpendicular lines at endpoints (Apple dimension-line style).
+     */
+    private fun drawExtensionLines(canvas: Canvas, x1: Float, y1: Float, x2: Float, y2: Float) {
+        val dx = x2 - x1
+        val dy = y2 - y1
+        val len = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+        if (len < 1f) return
+        val nx = -dy / len
+        val ny = dx / len
+        val ext = 12f  // extension line half-length
+
+        // Perpendicular extension at each endpoint
+        canvas.drawLine(x1 + nx * ext, y1 + ny * ext, x1 - nx * ext, y1 - ny * ext, extLineP)
+        canvas.drawLine(x2 + nx * ext, y2 + ny * ext, x2 - nx * ext, y2 - ny * ext, extLineP)
+    }
+
+    /**
+     * Small arrow head at (fromX, fromY) pointing toward (toX, toY).
      */
     private fun drawArrowHead(canvas: Canvas, fromX: Float, fromY: Float, toX: Float, toY: Float) {
         val dx = toX - fromX
         val dy = toY - fromY
         val len = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
         if (len < 1f) return
-
-        // Unit vector along line direction
         val ux = dx / len
         val uy = dy / len
-        // Perpendicular vector
         val px = -uy
         val py = ux
 
-        val arrowLen = 14f   // arrow length along line
-        val arrowWid = 7f    // half-width perpendicular
+        val aLen = 8f   // arrow length (was 14)
+        val aWid = 4f    // half-width (was 7)
 
-        // Tip is at the endpoint
-        val tipX = fromX
-        val tipY = fromY
-        // Base center (pulled back along line)
-        val baseX = fromX + ux * arrowLen
-        val baseY = fromY + uy * arrowLen
-        // Left and right base corners
-        val lx = baseX + px * arrowWid
-        val ly = baseY + py * arrowWid
-        val rx = baseX - px * arrowWid
-        val ry = baseY - py * arrowWid
+        val baseX = fromX + ux * aLen
+        val baseY = fromY + uy * aLen
+        val lx = baseX + px * aWid
+        val ly = baseY + py * aWid
+        val rx = baseX - px * aWid
+        val ry = baseY - py * aWid
 
         arrowPath.reset()
-        arrowPath.moveTo(tipX, tipY)
+        arrowPath.moveTo(fromX, fromY)
         arrowPath.lineTo(lx, ly)
         arrowPath.lineTo(rx, ry)
         arrowPath.close()
@@ -261,26 +283,22 @@ class MeasureOverlayView @JvmOverloads constructor(
     }
 
     /**
-     * Apple-style distance label: rounded capsule with text, floating above the line.
+     * Apple-style capsule label: small text, 25dp above line midpoint.
      */
     private fun drawAppleLabel(canvas: Canvas, text: String, x: Float, y: Float) {
-        // Measure text for capsule sizing
         txtP.getTextBounds(text, 0, text.length, rRect)
-        val padH = 18f
-        val padV = 12f
+        val padH = 14f
+        val padV = 8f
         val w = rRect.width() / 2f + padH
         val h = rRect.height() / 2f + padV
 
-        // Float above the line midpoint
-        val labelY = y - 36f
+        // 25dp above the line midpoint
+        val labelY = y - 25f
 
-        // Background capsule
         val rect = RectF(x - w, labelY - h, x + w, labelY + h)
         canvas.drawRoundRect(rect, h, h, txtBgP)
-        // Subtle border
         canvas.drawRoundRect(rect, h, h, txtBorderP)
 
-        // Text (vertically centered)
         val textY = labelY + rRect.height() / 2f
         canvas.drawText(text, x, textY, txtP)
     }
@@ -328,6 +346,9 @@ class MeasureOverlayView @JvmOverloads constructor(
                     onSweepMove?.invoke(event.x, event.y)
                     return true
                 }
+                // P1: track finger for live preview line
+                onMove?.invoke(event.x, event.y)
+                return true
             }
         }
         return super.onTouchEvent(event)
