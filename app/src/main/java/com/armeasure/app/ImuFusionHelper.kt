@@ -147,7 +147,7 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         // When device is moving fast, depth sensors become unreliable
         // Reduce confidence by scaling — pure heuristic
         return when {
-            motion.excessive -> 0.7f  // significant motion → depth likely off
+            motion.excessive -> 0.85f  // significant motion → depth likely off
             motion.rotationDeg > ROTATION_NOISE_FLOOR_DEG * 3 -> 0.9f
             else -> 1f
         }

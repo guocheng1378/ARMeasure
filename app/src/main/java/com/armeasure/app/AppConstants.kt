@@ -21,9 +21,9 @@ object AppConstants {
     const val DEPTH16_CLOSE_THRESHOLD_CM = 100f
 
     // ── IMU motion detection ──
-    const val MAX_ROTATION_DEG = 3.0f
-    const val MAX_VELOCITY_MS = 0.15f
-    const val ROTATION_NOISE_FLOOR_DEG = 0.3f
+    const val MAX_ROTATION_DEG = 5.0f
+    const val MAX_VELOCITY_MS = 0.25f
+    const val ROTATION_NOISE_FLOOR_DEG = 0.5f
     const val IMU_ADAPTIVE_ALPHA_STATIC = 0.99f
     const val IMU_ADAPTIVE_ALPHA_MOTION = 0.90f
     const val IMU_ADAPTIVE_ALPHA_DEFAULT = 0.98f

@@ -453,7 +453,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val motionFactor = when {
                 !imuAvail -> 1f
                 motion != null -> when {
-                    motion.excessive -> 0.7f
+                    motion.excessive -> 0.85f
                     motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 0.9f
                     else -> 1f
                 }
