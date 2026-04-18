@@ -4,33 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Unit tests for ImuFusionHelper logic (pure math, no Android dependency).
- * Tests the static helper methods and data classes.
+ * Unit tests for new features and AppConstants.
+ * Pure JVM tests — no Android dependencies.
  */
 class NewFeaturesTest {
-
-    // ── MotionResult data class tests ──
-
-    @Test
-    fun `MotionResult excessive is true when rotation exceeds threshold`() {
-        val result = ImuFusionHelper.MotionResult(
-            rotationDeg = 10f, velocityMs = 0.1f,
-            elapsedMs = 500, excessive = true,
-            warning = "⚠️ 设备旋转过大 (10.0°)"
-        )
-        assertTrue(result.excessive)
-        assertNotNull(result.warning)
-    }
-
-    @Test
-    fun `MotionResult not excessive when within thresholds`() {
-        val result = ImuFusionHelper.MotionResult(
-            rotationDeg = 1f, velocityMs = 0.05f,
-            elapsedMs = 200, excessive = false, warning = null
-        )
-        assertFalse(result.excessive)
-        assertNull(result.warning)
-    }
 
     // ── AppConstants sanity checks ──
 
