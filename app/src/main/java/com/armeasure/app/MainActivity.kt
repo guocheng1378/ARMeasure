@@ -560,6 +560,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.tvDistance.text = "采样中(1/2)..."
             haptic()
             if (imuHelper.isAvailable()) imuHelper.markPoint()
+            // Start preview IMMEDIATELY (don't wait for sampling to finish)
+            previewDistEma = Float.NaN
+            backgroundHandler?.post(linePreviewRunnable)
             collectDepthSamples(cx, cy, onProgress = { cur, total ->
                 runOnUiThread { binding.tvDistance.text = "采样中(1/2) $cur/$total..." }
             }) { result ->
@@ -569,8 +572,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.firstPointDepthCm = firstDistance
                     binding.tvDistance.text = "移动手机瞄准第二点 → 点击确认"
                 }
-                previewDistEma = Float.NaN
-                backgroundHandler?.post(linePreviewRunnable)
             }
         } else {
             // ── Second point: also at SCREEN CENTER ──
