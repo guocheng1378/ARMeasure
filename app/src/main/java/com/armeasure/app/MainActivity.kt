@@ -49,6 +49,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var calibrationFactor = 1.0f
     private var isCalibrated = false
     private var calibrating = false
+    /** Manual reference depth override (cm). 0 = disabled, use sensor. */
+    private var manualDepthCm: Float = 0f
 
     private val historyPrefs by lazy { getSharedPreferences("armeasure_history", MODE_PRIVATE) }
     private val measurementHistory = mutableListOf<HistoryEntry>()
@@ -248,6 +250,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     // ── Measurement ──────────────────────────────────────────
 
     private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null, skipImu: Boolean = false): Float? {
+        // Manual reference depth override (for ToF-only devices)
+        if (manualDepthCm > 0) {
+            var raw = manualDepthCm
+            if (isCalibrated) raw *= calibrationFactor
+            if (!skipImu && imuHelper.isAvailable()) {
+                val vw = cachedViewWidth; val vh = cachedViewHeight
+                return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh, raw) else imuHelper.compensateDepth(raw)
+            }
+            return raw
+        }
         // Priority: depth map (spatial) > AF focus distance > ToF (center-only, no spatial info)
         var raw: Float? = null
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) {
@@ -578,6 +590,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             sv.scaleX = ns; sv.scaleY = ns; sv.pivotX = sv.width / 2f; sv.pivotY = sv.height / 2f
         }
         binding.btnCalibrate.setOnClickListener { startCalibration() }
+        binding.btnCalibrate.setOnLongClickListener { setManualDepth(); true }
         binding.btnHistory.setOnClickListener { showHistory() }
         binding.tvDistance.setOnLongClickListener { cycleUnit(); true }
         binding.btnReset.setOnClickListener { resetMeasurement() }
@@ -800,6 +813,36 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.tvCalibration.setTextColor(android.graphics.Color.parseColor("#00FF88"))
         } else { binding.tvCalibration.text = "" }
         binding.btnCalibrate.setBackgroundColor(if (calibrating) 0x33FFCC00.toInt() else 0x00000000)
+        if (manualDepthCm > 0) {
+            binding.tvCalibration.text = "ref:${String.format("%.0f", manualDepthCm)}cm"
+            binding.tvCalibration.setTextColor(android.graphics.Color.parseColor("#FFCC00"))
+        }
+    }
+
+    /** Set manual reference depth for ToF-only devices */
+    private fun setManualDepth() {
+        val input = android.widget.EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "到被测物体的距离 (cm)"
+            if (manualDepthCm > 0) setText(String.format("%.0f", manualDepthCm))
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("设置参考深度")
+            .setMessage("ToF单点传感器无法区分前景/背景。\n输入到被测物体的距离(cm)，\n用于准确计算水平距离。")
+            .setView(input)
+            .setPositiveButton("设置") { _, _ ->
+                val v = input.text.toString().toFloatOrNull()
+                if (v != null && v > 0) {
+                    manualDepthCm = v; updateCalibrationUI()
+                    Toast.makeText(this, "参考深度: ${v.toInt()}cm (再按一次清除)", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("清除") { _, _ ->
+                manualDepthCm = 0f; updateCalibrationUI()
+                Toast.makeText(this, "已清除参考深度", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     // ── History ──────────────────────────────────────────────
