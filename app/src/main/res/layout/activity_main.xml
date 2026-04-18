@@ -6,7 +6,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#FF000000"
-    android:fitsSystemWindows="false">
+    android:fitsSystemWindows="true">
 
     <!-- Camera + Overlay (fullscreen) -->
     <SurfaceView
@@ -33,7 +33,7 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="48dp"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:layout_marginEnd="56dp"
         app:cardBackgroundColor="#CC000000"
         app:cardCornerRadius="12dp"
@@ -124,10 +124,10 @@
     <!-- Settings gear (top-left) -->
     <ImageButton
         android:id="@+id/btnSettings"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
         android:layout_marginStart="8dp"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:background="?attr/selectableItemBackgroundBorderless"
         android:src="@android:drawable/ic_menu_preferences"
         android:contentDescription="@string/settings"
@@ -142,7 +142,7 @@
         android:id="@+id/fabReset"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:layout_marginEnd="8dp"
         android:contentDescription="@string/reset"
         app:fabSize="mini"
@@ -156,10 +156,10 @@
     <com.google.android.material.card.MaterialCardView
         android:id="@+id/bottomActionBar"
         android:layout_width="0dp"
-        android:layout_height="80dp"
-        android:layout_marginStart="12dp"
-        android:layout_marginEnd="60dp"
-        android:layout_marginBottom="12dp"
+        android:layout_height="68dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="48dp"
+        android:layout_marginBottom="8dp"
         app:cardBackgroundColor="#CC000000"
         app:cardCornerRadius="40dp"
         app:cardElevation="0dp"
@@ -188,15 +188,15 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:minWidth="64dp"
+                    android:minWidth="48dp"
                     android:orientation="vertical"
                     android:gravity="center"
                     android:paddingHorizontal="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless">
 
                     <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:src="@android:drawable/ic_menu_mylocation"
                         app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_point" />
@@ -216,15 +216,15 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:minWidth="64dp"
+                    android:minWidth="48dp"
                     android:orientation="vertical"
                     android:gravity="center"
                     android:paddingHorizontal="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless">
 
                     <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:src="@android:drawable/ic_menu_edit"
                         app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_line" />
@@ -244,15 +244,15 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:minWidth="64dp"
+                    android:minWidth="48dp"
                     android:orientation="vertical"
                     android:gravity="center"
                     android:paddingHorizontal="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless">
 
                     <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:src="@android:drawable/ic_menu_crop"
                         app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_area" />
@@ -272,15 +272,15 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:minWidth="64dp"
+                    android:minWidth="48dp"
                     android:orientation="vertical"
                     android:gravity="center"
                     android:paddingHorizontal="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless">
 
                     <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:src="@android:drawable/ic_menu_rotate"
                         app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_sweep" />
@@ -300,15 +300,15 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:minWidth="64dp"
+                    android:minWidth="48dp"
                     android:orientation="vertical"
                     android:gravity="center"
                     android:paddingHorizontal="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless">
 
                     <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:src="@android:drawable/ic_menu_upload"
                         app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_height" />
@@ -328,15 +328,15 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:minWidth="64dp"
+                    android:minWidth="48dp"
                     android:orientation="vertical"
                     android:gravity="center"
                     android:paddingHorizontal="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless">
 
                     <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:src="@android:drawable/ic_menu_compass"
                         app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_angle" />
@@ -356,15 +356,15 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:minWidth="64dp"
+                    android:minWidth="48dp"
                     android:orientation="vertical"
                     android:gravity="center"
                     android:paddingHorizontal="8dp"
                     android:background="?attr/selectableItemBackgroundBorderless">
 
                     <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:src="@android:drawable/ic_menu_sort_by_size"
                         app:tint="@color/text_primary"
                         android:contentDescription="@string/mode_level" />
@@ -389,7 +389,7 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:layout_marginEnd="12dp"
-        android:layout_marginBottom="100dp"
+        android:layout_marginBottom="84dp"
         android:gravity="center"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
@@ -438,8 +438,8 @@
     <ProgressBar
         android:id="@+id/progressBar"
         style="?android:attr/progressBarStyleSmall"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="20dp"
+        android:layout_height="20dp"
         android:indeterminateTint="@color/accent"
         android:visibility="gone"
         app:layout_constraintTop_toBottomOf="@id/topInfoCard"
