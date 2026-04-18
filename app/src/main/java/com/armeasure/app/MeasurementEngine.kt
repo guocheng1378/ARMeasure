@@ -111,7 +111,7 @@ object MeasurementEngine {
         if (dist < 0.1f) return (sigma1 + sigma2)
         val dd1 = (d1 * A - d2 * B) / dist
         val dd2 = (d2 * C - d1 * B) / dist
-        return sqrt((dd1 * sigma1) * (dd1 * sigma1) + (dd2 * sigma2) * (dd2 * sigma2))
+        return sqrt((dd1 * sigma1) * (dd1 * sigma1) + (dd2 * sigma2) * (dd2 * sigma2)).toFloat()
     }
 
     /**
@@ -142,7 +142,7 @@ object MeasurementEngine {
         if (dist < 0.1f) return (sigma1 + sigma2)
         val dd1 = (d1 * A - d2 * B) / dist
         val dd2 = (d2 * C - d1 * B) / dist
-        return sqrt((dd1 * sigma1) * (dd1 * sigma1) + (dd2 * sigma2) * (dd2 * sigma2))
+        return sqrt((dd1 * sigma1) * (dd1 * sigma1) + (dd2 * sigma2) * (dd2 * sigma2)).toFloat()
     }
 
     /**
