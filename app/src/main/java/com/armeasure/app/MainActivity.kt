@@ -542,80 +542,89 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 firstUncertainty = result?.uncertaintyCm ?: 0f
                 runOnUiThread {
                     binding.overlayView.firstPointDepthCm = firstDistance
-                    binding.tvDistance.text = "移动手机，点击确认"
+                    binding.tvDistance.text = "将 ⊕ 对准第二点，点击确认"
                 }
                 previewDistEma = Float.NaN
                 backgroundHandler?.post(linePreviewRunnable)
             }
         } else {
             // ── Second point: CONFIRM at screen center ──
-            backgroundHandler?.removeCallbacks(linePreviewRunnable)
-            binding.overlayView.placingSecondPoint = false
-            binding.overlayView.triggerPulse(x, y)
-            val imuAvail = imuHelper.isAvailable()
-            val motion = if (imuAvail) imuHelper.checkMotionSince() else null
-            if (imuAvail) imuHelper.markPoint()
-            val motionWarn = motion?.warning
-            if (motionWarn != null) hapticWarning()
-
-            val p1 = firstPoint!!
-            val cx = cachedViewWidth / 2f; val cy = cachedViewHeight / 2f
+            // Flash the crosshair before switching state to avoid jarring visual jump
+            binding.overlayView.confirmFlash = true
+            binding.overlayView.invalidate()
             binding.tvDistance.text = "确认中..."
+            haptic()
 
-            // Final: re-sample depth at BOTH positions
-            collectDepthSamples(cx, cy, onProgress = { _, _ -> }) { result2 ->
-                val d2 = result2?.depthCm ?: 0f
+            backgroundHandler?.postDelayed({
+                backgroundHandler?.removeCallbacks(linePreviewRunnable)
+                runOnUiThread { binding.overlayView.placingSecondPoint = false }
+                val imuAvail = imuHelper.isAvailable()
+                val motion = if (imuAvail) imuHelper.checkMotionSince() else null
+                if (imuAvail) imuHelper.markPoint()
+                val motionWarn = motion?.warning
+                if (motionWarn != null) hapticWarning()
 
-                // Also re-sample first point depth at confirmation time
-                val d1 = getRawDepthAt(p1.x, p1.y) ?: firstDistance
+                val p1 = firstPoint!!
+                // Safety: use surfaceView dimensions if cached values are 0
+                val vw = cachedViewWidth.takeIf { it > 0 } ?: binding.surfaceView.width.toFloat()
+                val vh = cachedViewHeight.takeIf { it > 0 } ?: binding.surfaceView.height.toFloat()
+                val cx = vw / 2f; val cy = vh / 2f
 
-                val vw = cachedViewWidth; val vh = cachedViewHeight
-                val intrinsics = cameraCtrl.intrinsicCalibration
-                val arr = cameraCtrl.rgbSensorActiveArray
-                val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+                // Final: re-sample depth at BOTH positions
+                collectDepthSamples(cx, cy, onProgress = { _, _ -> }) { result2 ->
+                    val d2 = result2?.depthCm ?: 0f
 
-                val dist = if (d1 > 0 && d2 > 0) {
-                    if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                        MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, cx, cy, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                    // Also re-sample first point depth at confirmation time
+                    val d1 = getRawDepthAt(p1.x, p1.y) ?: firstDistance
+
+                    val intrinsics = cameraCtrl.intrinsicCalibration
+                    val arr = cameraCtrl.rgbSensorActiveArray
+                    val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
+
+                    val dist = if (d1 > 0 && d2 > 0) {
+                        if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
+                            MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, cx, cy, d1, d2, vw, vh, intrinsics, imgW, imgH)
+                        } else {
+                            MeasurementEngine.compute3DDistance(p1.x, p1.y, cx, cy, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                        }
+                    } else 0f
+
+                    val rawUnc = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
+                        MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, intrinsics, imgW, imgH)
                     } else {
-                        MeasurementEngine.compute3DDistance(p1.x, p1.y, cx, cy, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                        MeasurementEngine.compute3DDistanceUncertaintyFOV(p1.x, p1.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, getHfovDegrees(), getVfovDegrees())
                     }
-                } else 0f
+                    val motionConfidence = when {
+                        !imuAvail -> 1f; motion?.excessive == true -> 1.5f
+                        motion != null && motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
+                        else -> 1f
+                    }
+                    val totalUnc = rawUnc * motionConfidence
 
-                val rawUnc = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, intrinsics, imgW, imgH)
-                } else {
-                    MeasurementEngine.compute3DDistanceUncertaintyFOV(p1.x, p1.y, cx, cy, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, getHfovDegrees(), getVfovDegrees())
-                }
-                val motionConfidence = when {
-                    !imuAvail -> 1f; motion?.excessive == true -> 1.5f
-                    motion != null && motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
-                    else -> 1f
-                }
-                val totalUnc = rawUnc * motionConfidence
+                    val p1Screen = PointF(p1.x, p1.y)
+                    val p2Screen = PointF(cx, cy)
 
-                val p1Screen = PointF(p1.x, p1.y)
-                val p2Screen = PointF(cx, cy)
-
-                binding.overlayView.liveDistanceCm = -1f
-                binding.overlayView.firstPointDepthCm = -1f
-                binding.overlayView.secondPointDepthCm = -1f
-                binding.overlayView.deviceIsLevel = false
-                binding.overlayView.lineConfirmed = true
-                runOnUiThread {
-                    binding.progressBar.visibility = android.view.View.GONE
-                    measuredResult = formatDistance(dist)
-                    val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
-                    val displayText = listOfNotNull(measuredResult + uncStr, motionWarn).joinToString("  ")
-                    binding.tvDistance.text = displayText
-                    binding.overlayView.lines = listOf(Pair(p1Screen, p2Screen)); binding.overlayView.showLineLabels = true
-                    binding.overlayView.lineDistanceLabels = listOf(displayText)
-                    overlayPoints.clear(); overlayPoints.add(p1Screen); overlayPoints.add(p2Screen)
-                    updateOverlay(); firstPoint = null
-                    binding.overlayView.animateLineExpand()
-                    hapticComplete(); saveToHistory(measuredResult, "两点")
+                    binding.overlayView.liveDistanceCm = -1f
+                    binding.overlayView.firstPointDepthCm = -1f
+                    binding.overlayView.secondPointDepthCm = -1f
+                    binding.overlayView.deviceIsLevel = false
+                    binding.overlayView.confirmFlash = false
+                    binding.overlayView.lineConfirmed = true
+                    runOnUiThread {
+                        binding.progressBar.visibility = android.view.View.GONE
+                        measuredResult = formatDistance(dist)
+                        val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
+                        val displayText = listOfNotNull(measuredResult + uncStr, motionWarn).joinToString("  ")
+                        binding.tvDistance.text = displayText
+                        binding.overlayView.lines = listOf(Pair(p1Screen, p2Screen)); binding.overlayView.showLineLabels = true
+                        binding.overlayView.lineDistanceLabels = listOf(displayText)
+                        overlayPoints.clear(); overlayPoints.add(p1Screen); overlayPoints.add(p2Screen)
+                        updateOverlay(); firstPoint = null
+                        binding.overlayView.animateLineExpand()
+                        hapticComplete(); saveToHistory(measuredResult, "两点")
+                    }
                 }
-            }
+            }, 250) // 250ms delay for confirm flash transition
         }
     }
 
@@ -740,6 +749,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
         binding.overlayView.lineDistanceLabels = emptyList(); binding.overlayView.placingSecondPoint = false
         binding.overlayView.lineConfirmed = false
+        binding.overlayView.confirmFlash = false
         binding.overlayView.liveCrosshair = null; binding.overlayView.liveDistanceCm = -1f
         binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f
         binding.overlayView.deviceIsLevel = false

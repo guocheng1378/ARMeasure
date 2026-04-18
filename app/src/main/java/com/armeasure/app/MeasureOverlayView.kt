@@ -36,6 +36,8 @@ class MeasureOverlayView @JvmOverloads constructor(
     var showTutorial: Boolean = false
     /** Once true, the completed line is locked and ignores all updates */
     var lineConfirmed: Boolean = false
+    /** Brief flash state during confirm transition (250ms) */
+    var confirmFlash: Boolean = false
 
     var onTap: ((Float, Float) -> Unit)? = null
     var onMove: ((Float, Float) -> Unit)? = null
@@ -216,7 +218,6 @@ class MeasureOverlayView @JvmOverloads constructor(
 
         // ★ Confirmed line: locked, skip all preview/live drawing
         if (lineConfirmed) {
-            // Only draw the completed lines + endpoint markers + labels
             drawCompletedMeasurement(canvas)
             return
         }
@@ -257,15 +258,20 @@ class MeasureOverlayView @JvmOverloads constructor(
             canvas.drawCircle(p0.x, p0.y, 6f, dotP)           // solid white center
             canvas.drawCircle(p0.x, p0.y, 14f, endpointRingP) // inner ring
             canvas.drawCircle(p0.x, p0.y, 20f, endpointRingOuterP) // outer ring
-            // ★ Screen center: LIGHT crosshair cursor (not a point — just an aim indicator)
+            // ★ Screen center: crosshair cursor (aim indicator)
             val tick = 14f
-            crossP.alpha = 80
+            // Confirm flash: briefly brighten the crosshair
+            val crossAlpha = if (confirmFlash) 255 else 180
+            crossP.alpha = crossAlpha
+            crossP.strokeWidth = if (confirmFlash) 2.5f else 1.5f
             canvas.drawLine(cx - tick, cy, cx - 4, cy, crossP)
             canvas.drawLine(cx + 4, cy, cx + tick, cy, crossP)
             canvas.drawLine(cx, cy - tick, cx, cy - 4, crossP)
             canvas.drawLine(cx, cy + 4, cx, cy + tick, crossP)
-            crossP.alpha = 255 // restore
-            canvas.drawCircle(cx, cy, 18f, crossP) // light ring, no fill
+            canvas.drawCircle(cx, cy, 18f, crossP)
+            crossP.alpha = 255; crossP.strokeWidth = 1.5f // restore
+            // "点击确认" label below crosshair
+            drawLabel(canvas, "点击确认", cx, cy + 32f)
             // Live distance label at midpoint
             if (liveDistanceCm > 0) {
                 val mx = (p0.x + cx) / 2f; val my = (p0.y + cy) / 2f
