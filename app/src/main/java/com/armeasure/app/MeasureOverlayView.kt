@@ -22,12 +22,7 @@ class MeasureOverlayView @JvmOverloads constructor(
     var sweepDistanceCm: Float = -1f
     var sweepHistory: List<Pair<Float, Float>> = emptyList()
     var lineDistanceLabels: List<String> = emptyList()
-    @Volatile var placingSecondPoint: Boolean = false
     var liveCrosshair: PointF? = null
-    /** Live distance preview between first point and current cursor (cm). -1 = no data. */
-    var liveDistanceCm: Float = -1f
-    /** Projected screen position of the first anchor point (moves with camera, Apple-like). */
-    var previewAnchor: PointF? = null
     /** Depth at first point (cm). Shown as small label near endpoint. */
     var firstPointDepthCm: Float = -1f
     /** Depth at second/live point (cm). */
@@ -250,35 +245,6 @@ class MeasureOverlayView @JvmOverloads constructor(
                 }
             }
         }
-
-        if (placingSecondPoint) {
-            // Anchor point: either projected 3D position (Apple-like) or fallback to center
-            val anchor = previewAnchor ?: PointF(width / 2f, height / 2f)
-            val cx = width / 2f; val cy = height / 2f
-
-            // ── Preview line: anchor → current center ──
-            canvas.drawLine(anchor.x, anchor.y, cx, cy, previewP)
-
-            // ── Anchor dot: small, subtle ──
-            canvas.drawCircle(anchor.x, anchor.y, 5f, dotP)
-
-            // ── Center crosshair: the aim target ──
-            val tick = AppConstants.CROSSHAIR_SIZE
-            crossP.alpha = 255; crossP.strokeWidth = 2f
-            canvas.drawLine(cx - tick, cy, cx - 5, cy, crossP)
-            canvas.drawLine(cx + 5, cy, cx + tick, cy, crossP)
-            canvas.drawLine(cx, cy - tick, cx, cy - 5, crossP)
-            canvas.drawLine(cx, cy + 5, cx, cy + tick, crossP)
-            canvas.drawCircle(cx, cy, 3f, dotP)
-            crossP.strokeWidth = 1.5f
-
-            // ── Live distance on preview line ──
-            if (liveDistanceCm > 0) {
-                val mx = (anchor.x + cx) / 2f; val my = (anchor.y + cy) / 2f
-                drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
-            }
-        }
-
         if (lineExpandProgress > 0.6f) {
             for (i in lines.indices) {
                 if (i < lineDistanceLabels.size) {
@@ -308,7 +274,7 @@ class MeasureOverlayView @JvmOverloads constructor(
         rippleCenter?.let { rc -> if (rippleAnimator.isRunning) { rippleP.alpha = rippleAlpha; canvas.drawCircle(rc.x, rc.y, rippleRadius, rippleP) } }
 
         // ── Center crosshair: always visible as aim indicator ──
-        if (!lineConfirmed && !(placingSecondPoint && points.size == 1)) {
+        if (!lineConfirmed) {
             val cx = width / 2f; val cy = height / 2f
             val cs = AppConstants.CROSSHAIR_SIZE
             crossP.alpha = 160
@@ -319,7 +285,6 @@ class MeasureOverlayView @JvmOverloads constructor(
             crossP.alpha = 255; crossP.strokeWidth = 1.5f
         }
 
-        // First point marker is now drawn via drawEndpointMarker in the placingSecondPoint block above
     }
 
     /** Draw the locked/confirmed measurement line — no animation, no live updates. */

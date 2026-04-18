@@ -63,8 +63,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var firstPoint: PointF? = null
     @Volatile private var firstDistance: Float = 0f
     private var firstUncertainty: Float = 0f
-    /** Apple-like: stored 3D world coordinates of first point (camera frame at tap time) */
-    @Volatile private var firstWorld3D: Triple<Float, Float, Float>? = null
     /** Read smoothed depth at screen point (3×3 neighbor median) without modifying shared Kalman state. */
     private fun getRawDepthAt(sx: Float, sy: Float): Float? {
         val buf = depthBuffer ?: return null
@@ -86,8 +84,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         return samples[samples.size / 2] // median
     }
 
-    /** Apple-like: stored 3D world coordinates of second point */
-    @Volatile private var secondWorld3D: Triple<Float, Float, Float>? = null
     /** Line mode preview loop: samples depth at screen center, updates live distance */
     /** EMA-smoothed preview distance (reset on each new preview session) */
     private var     /** Simple preview loop: reads depth at first point + screen center, shows live distance */
@@ -331,27 +327,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     data class DepthResult(val depthCm: Float, val uncertaintyCm: Float)
 
-    /** Compute 3D world coordinates from screen position + depth (cm). */
-    private fun screenToWorld3D(sx: Float, sy: Float, depthCm: Float): Triple<Float, Float, Float> {
-        val vw = cachedViewWidth; val vh = cachedViewHeight
-        val intrinsics = cameraCtrl.intrinsicCalibration
-        val arr = cameraCtrl.rgbSensorActiveArray
-        if (intrinsics != null && intrinsics.size >= 4 && arr != null && vw > 0 && vh > 0) {
-            return MeasurementEngine.screenTo3DIntrinsic(sx, sy, depthCm, vw, vh, intrinsics, arr.width(), arr.height())
-        }
-        return MeasurementEngine.screenTo3DFOV(sx, sy, depthCm, vw, vh, getHfovDegrees(), getVfovDegrees())
-    }
 
-    /** Project 3D world coordinates back to screen position. */
-    private fun world3DToScreen(wx: Float, wy: Float, wz: Float): Pair<Float, Float> {
-        val vw = cachedViewWidth; val vh = cachedViewHeight
-        val intrinsics = cameraCtrl.intrinsicCalibration
-        val arr = cameraCtrl.rgbSensorActiveArray
-        if (intrinsics != null && intrinsics.size >= 4 && arr != null && vw > 0 && vh > 0) {
-            return MeasurementEngine.worldToScreenIntrinsic(wx, wy, wz, vw, vh, intrinsics, arr.width(), arr.height())
-        }
-        return MeasurementEngine.worldToScreenFOV(wx, wy, wz, vw, vh, getHfovDegrees(), getVfovDegrees())
-    }
 
     private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = AppConstants.DEPTH_SAMPLE_COUNT, intervalMs: Long = AppConstants.DEPTH_SAMPLE_INTERVAL_MS, skipImu: Boolean = false, onProgress: ((Int, Int) -> Unit)? = null, onComplete: (DepthResult?) -> Unit) {
         val localFilter = DistanceFilter(
@@ -703,8 +679,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         // Clean up previous mode state before switching
         if (currentMode == Mode.LINE && mode != Mode.LINE) {
                         firstPoint = null
-                        binding.overlayView.liveDistanceCm = -1f
-                        binding.overlayView.firstPointDepthCm = -1f
+                                binding.overlayView.firstPointDepthCm = -1f
             binding.overlayView.secondPointDepthCm = -1f
         }
         // Clean up stale overlay lines when entering any mode
@@ -741,10 +716,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.sweepDistanceCm = -1f; binding.overlayView.sweepHistory = emptyList()
         binding.overlayView.lineDistanceLabels = emptyList(); binding.overlayView.lineConfirmed = false
         binding.overlayView.confirmFlash = false
-        binding.overlayView.liveCrosshair = null; binding.overlayView.liveDistanceCm = -1f
-                binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f
-        binding.overlayView.deviceIsLevel = false
-        depthFilter.reset(); tofHelper.reset()
+                                        depthFilter.reset(); tofHelper.reset()
         if (imuHelper.isAvailable()) imuHelper.reset()
         currentFocusDistance = -1f; depthBuffer = null
         synchronized(temporalLock) { temporalFrames.clear() }
@@ -862,7 +834,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     binding.overlayView.invalidate()
                 }
             }
-            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; firstWorld3D = null; secondWorld3D = null; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.liveDistanceCm = -1f; binding.overlayView.firstPointDepthCm = -1f; binding.overlayView.secondPointDepthCm = -1f; binding.overlayView.deviceIsLevel = false; updateOverlay() }
+            Mode.LINE -> { firstPoint = null; firstUncertainty = 0f; overlayPoints.clear(); binding.tvDistance.text = "--"; binding.overlayView.lines = emptyList(); updateOverlay() }
             else -> resetMeasurement()
         }
     }
