@@ -42,6 +42,8 @@ class CameraController(
         private set
     var depthSensorActiveArray: Rect? = null
         private set
+    /** Actual crop region from capture result — may differ from active array when depth stream is active */
+    @Volatile var actualCropRegion: Rect? = null
     var sensorSize: SizeF? = null
         private set
     var focalLengthMm: Float = 0f
@@ -383,6 +385,19 @@ class CameraController(
         } catch (e: Exception) {
             Log.e(TAG, "setupDepthOnlySession failed", e)
         }
+    }
+
+    /** Get effective image dimensions for intrinsic mapping. Uses crop region if available. */
+    fun getEffectiveImageSize(): Pair<Int, Int> {
+        val crop = actualCropRegion
+        if (crop != null && crop.width() > 0 && crop.height() > 0) {
+            return Pair(crop.width(), crop.height())
+        }
+        val arr = rgbSensorActiveArray
+        if (arr != null && arr.width() > 0 && arr.height() > 0) {
+            return Pair(arr.width(), arr.height())
+        }
+        return Pair(0, 0)
     }
 
     /** Close only the depth camera, keep RGB preview running */

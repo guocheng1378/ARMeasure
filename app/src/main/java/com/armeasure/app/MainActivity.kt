@@ -198,6 +198,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     }
                     currentFocusDistance = newFocus
                 }
+                // Track actual crop region for correct intrinsic mapping
+                val crop = result.get(CaptureResult.SCALER_CROP_REGION)
+                if (crop != null) cameraCtrl.actualCropRegion = crop
             }
         }
         cameraCtrl.openCamera(selection, onReady = { same ->
@@ -252,7 +255,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) raw = getDepthAtScreenPoint(sx, sy, depthFilterOverride ?: depthFilter)
         val tofDist = tofHelper.getDistanceCm()
         if (raw != null && raw > 0 && tofDist != null && tofDist > 0) {
-            val tofVar = AppConstants.TOF_VARIANCE
+            // Fix #3: downweight ToF when tap is far from screen center (ToF measures center)
+            val vw = cachedViewWidth; val vh = cachedViewHeight
+            val tofSpatialPenalty = if (vw > 0 && vh > 0) {
+                val nx = (sx / vw - 0.5f) * 2f
+                val ny = (sy / vh - 0.5f) * 2f
+                val distFromCenter = Math.sqrt((nx * nx + ny * ny).toDouble()).toFloat()
+                // 1.0 at center, grows to ~3.0 at corners
+                (1f + distFromCenter * distFromCenter * 2f).coerceAtMost(10f)
+            } else 1f
+            val tofVar = AppConstants.TOF_VARIANCE * tofSpatialPenalty
             val depthVar = if (raw < AppConstants.DEPTH16_CLOSE_THRESHOLD_CM) AppConstants.DEPTH16_VARIANCE_CLOSE else AppConstants.DEPTH16_VARIANCE_FAR
             raw = MeasurementEngine.fuseDepth(raw, depthVar, tofDist, tofVar)
         } else if (raw == null || raw <= 0) {
@@ -440,7 +452,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.overlayView.liveCrosshair = null
             binding.overlayView.triggerPulse(x, y)
             val imuAvail = imuHelper.isAvailable()
+            // Fix #1: get rotation delta BEFORE markPoint (markPoint resets accumulators)
+            val (deltaPitch, deltaRoll) = if (imuAvail) imuHelper.getRotationDeltaRad() else Pair(0f, 0f)
             val motion = if (imuAvail) imuHelper.checkMotionSince() else null
+            if (imuAvail) imuHelper.markPoint()
             val motionWarn = motion?.warning
             if (motionWarn != null) hapticWarning()
             binding.tvDistance.text = "采样中(2/2)..."
@@ -455,15 +470,24 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     "⚠️ 两点平面差距大(${String.format("%.1f", depthRatio)}x)" else null
                 val vw = cachedViewWidth; val vh = cachedViewHeight
                 val intrinsics = cameraCtrl.intrinsicCalibration
+                val hasRotation = Math.abs(deltaPitch) > 0.005f || Math.abs(deltaRoll) > 0.005f
+                // Fix #2: use actual crop region for correct intrinsic mapping
+                val (imgW, imgH) = cameraCtrl.getEffectiveImageSize()
+                val effImgW = if (imgW > 0) imgW else vw.toInt()
+                val effImgH = if (imgH > 0) imgH else vh.toInt()
                 val dist = if (intrinsics != null && intrinsics.size >= 4) {
-                    val arr = cameraCtrl.rgbSensorActiveArray
-                    MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, arr?.width() ?: vw.toInt(), arr?.height() ?: vh.toInt())
+                    if (hasRotation)
+                        MeasurementEngine.compute3DDistanceIntrinsicRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, effImgW, effImgH, deltaPitch, deltaRoll)
+                    else
+                        MeasurementEngine.compute3DDistanceIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, intrinsics, effImgW, effImgH)
                 } else {
-                    MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
+                    if (hasRotation)
+                        MeasurementEngine.compute3DDistanceRotated(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees(), deltaPitch, deltaRoll)
+                    else
+                        MeasurementEngine.compute3DDistance(p1.x, p1.y, p2.x, p2.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
                 val rawUnc = if (intrinsics != null && intrinsics.size >= 4) {
-                    val arr = cameraCtrl.rgbSensorActiveArray
-                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, arr?.width() ?: vw.toInt(), arr?.height() ?: vh.toInt())
+                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, intrinsics, effImgW, effImgH)
                 } else {
                     MeasurementEngine.compute3DDistanceUncertaintyFOV(p1.x, p1.y, p2.x, p2.y, d1, d2, u1, u2, vw, vh, getHfovDegrees(), getVfovDegrees())
                 }
@@ -530,9 +554,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val intrinsics = cameraCtrl.intrinsicCalibration
                 val pts3d = pts.zip(depths).map { (p, d) ->
                     if (intrinsics != null && intrinsics.size >= 4) {
-                        val arr = cameraCtrl.rgbSensorActiveArray
-                        val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
-                        val ix = p.x / vw * imgW; val iy = p.y / vh * imgH
+                        val (imgW, imgH) = cameraCtrl.getEffectiveImageSize()
+                        val effW = if (imgW > 0) imgW else vw.toInt(); val effH = if (imgH > 0) imgH else vh.toInt()
+                        val ix = p.x / vw * effW; val iy = p.y / vh * effH
                         Triple(d!! * (ix - intrinsics[2]) / intrinsics[0], d * (iy - intrinsics[3]) / intrinsics[1], d)
                     } else {
                         val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()

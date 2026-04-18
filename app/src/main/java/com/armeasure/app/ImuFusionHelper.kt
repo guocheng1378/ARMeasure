@@ -88,6 +88,12 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         hasSnapshot = true
     }
 
+    /** Get pitch/roll delta since last markPoint() in radians. */
+    fun getRotationDeltaRad(): Pair<Float, Float> {
+        if (!hasSnapshot) return Pair(0f, 0f)
+        return Pair(pitch - snapPitch, roll - snapRoll)
+    }
+
     data class MotionResult(
         /** Rotation difference from snapshot (degrees) */
         val rotationDeg: Float,

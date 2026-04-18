@@ -229,4 +229,46 @@ class MeasurementEngineTest {
         )
         assertTrue("Intrinsic distance should be positive, got $intrinsicDist", intrinsicDist > 0f)
     }
+
+    // ── Rotation compensation tests ──
+
+    @Test
+    fun `rotatePoint with zero rotation is identity`() {
+        val (x, y, z) = MeasurementEngine.rotatePoint(10f, 20f, 100f, 0f, 0f)
+        assertEquals(10f, x, 0.01f)
+        assertEquals(20f, y, 0.01f)
+        assertEquals(100f, z, 0.01f)
+    }
+
+    @Test
+    fun `rotatePoint pitch rotates around X axis`() {
+        // Pitch 90°: point at (0, 0, 100) → (0, -100, 0)
+        val (x, y, z) = MeasurementEngine.rotatePoint(0f, 0f, 100f, Math.toRadians(90.0).toFloat(), 0f)
+        assertEquals(0f, x, 0.1f)
+        assertEquals(-100f, y, 0.1f)
+        assertEquals(0f, z, 0.1f)
+    }
+
+    @Test
+    fun `rotated distance equals non-rotated when delta is zero`() {
+        val normal = MeasurementEngine.compute3DDistance(
+            400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, 65.0, 50.0
+        )
+        val rotated = MeasurementEngine.compute3DDistanceRotated(
+            400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, 65.0, 50.0, 0f, 0f
+        )
+        assertEquals(normal, rotated, 0.01f)
+    }
+
+    @Test
+    fun `rotated intrinsic distance equals non-rotated when delta is zero`() {
+        val intrinsics = floatArrayOf(1500f, 1500f, 1080f, 960f)
+        val normal = MeasurementEngine.compute3DDistanceIntrinsic(
+            400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, intrinsics, 2160, 1920
+        )
+        val rotated = MeasurementEngine.compute3DDistanceIntrinsicRotated(
+            400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, intrinsics, 2160, 1920, 0f, 0f
+        )
+        assertEquals(normal, rotated, 0.01f)
+    }
 }

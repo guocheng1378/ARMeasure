@@ -9,6 +9,79 @@ import kotlin.math.sqrt
 object MeasurementEngine {
 
     /**
+     * Rotate a 3D point (x, y, z) by pitch and roll angles (radians).
+     * Used to compensate camera orientation change between two measurement points.
+     * Pitch rotates around X axis (vertical tilt), roll rotates around Y axis (horizontal tilt).
+     * @return rotated (x, y, z)
+     */
+    fun rotatePoint(x: Float, y: Float, z: Float, pitchRad: Float, rollRad: Float): Triple<Float, Float, Float> {
+        val cp = Math.cos(pitchRad.toDouble()).toFloat()
+        val sp = Math.sin(pitchRad.toDouble()).toFloat()
+        val cr = Math.cos(rollRad.toDouble()).toFloat()
+        val sr = Math.sin(rollRad.toDouble()).toFloat()
+        // Rotate by pitch around X: y' = y*cp - z*sp, z' = y*sp + z*cp
+        val y1 = y * cp - z * sp
+        val z1 = y * sp + z * cp
+        // Rotate by roll around Y: x' = x*cr + z1*sr, z'' = -x*sr + z1*cr
+        val x1 = x * cr + z1 * sr
+        val z2 = -x * sr + z1 * cr
+        return Triple(x1, y1, z2)
+    }
+
+    /**
+     * Compute 3D distance between two points with IMU rotation compensation.
+     * Un-rotates point2 back to point1's camera frame before computing distance.
+     * @param deltaPitchRad pitch change from point1 to point2 (radians)
+     * @param deltaRollRad roll change from point1 to point2 (radians)
+     * @return distance in cm
+     */
+    fun compute3DDistanceIntrinsicRotated(
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        d1: Float, d2: Float,
+        viewW: Float, viewH: Float,
+        intrinsics: FloatArray, imgW: Int, imgH: Int,
+        deltaPitchRad: Float, deltaRollRad: Float
+    ): Float {
+        val fx = intrinsics[0]; val fy = intrinsics[1]
+        val cx = intrinsics[2]; val cy = intrinsics[3]
+        val ix1 = x1 / viewW * imgW; val iy1 = y1 / viewH * imgH
+        val ix2 = x2 / viewW * imgW; val iy2 = y2 / viewH * imgH
+        val wx1 = d1 * (ix1 - cx) / fx
+        val wy1 = d1 * (iy1 - cy) / fy
+        val wz1 = d1
+        val wx2 = d2 * (ix2 - cx) / fx
+        val wy2 = d2 * (iy2 - cy) / fy
+        val wz2 = d2
+        // Un-rotate point2 to point1's frame
+        val (rx2, ry2, rz2) = rotatePoint(wx2, wy2, wz2, -deltaPitchRad, -deltaRollRad)
+        return sqrt((wx1 - rx2) * (wx1 - rx2) + (wy1 - ry2) * (wy1 - ry2) + (wz1 - rz2) * (wz1 - rz2))
+    }
+
+    fun compute3DDistanceRotated(
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        d1: Float, d2: Float,
+        viewW: Float, viewH: Float,
+        hfovDeg: Double, vfovDeg: Double,
+        deltaPitchRad: Float, deltaRollRad: Float
+    ): Float {
+        val clampFactor = AppConstants.FOV_TAN_CLAMP.toDouble()
+        val hfov = Math.toRadians(hfovDeg)
+        val vfov = Math.toRadians(vfovDeg)
+        val nx1 = ((x1 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val ny1 = ((0.5f - y1 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val nx2 = ((x2 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val ny2 = ((0.5f - y2 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
+        val wx1 = d1 * Math.tan(nx1 * hfov / 2).toFloat()
+        val wy1 = d1 * Math.tan(ny1 * vfov / 2).toFloat()
+        val wz1 = d1
+        val wx2 = d2 * Math.tan(nx2 * hfov / 2).toFloat()
+        val wy2 = d2 * Math.tan(ny2 * vfov / 2).toFloat()
+        val wz2 = d2
+        val (rx2, ry2, rz2) = rotatePoint(wx2, wy2, wz2, -deltaPitchRad, -deltaRollRad)
+        return sqrt((wx1 - rx2) * (wx1 - rx2) + (wy1 - ry2) * (wy1 - ry2) + (wz1 - rz2) * (wz1 - rz2))
+    }
+
+    /**
      * Compute 3D distance using camera intrinsic calibration (fx, fy, cx, cy).
      * More accurate than FOV approximation, especially away from image center.
      * @return distance in cm
