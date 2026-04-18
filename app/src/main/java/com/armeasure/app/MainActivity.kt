@@ -376,6 +376,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (firstPoint == null) {
             firstPoint = PointF(x, y)
             overlayPoints.clear(); overlayPoints.add(PointF(x, y))
+            // Apple-style: pulse + placement state
+            binding.overlayView.placingSecondPoint = true
+            binding.overlayView.triggerPulse(x, y)
             binding.tvDistance.text = "采样中(1/2)..."
             updateOverlay()
             // Mark IMU snapshot for motion detection
@@ -389,6 +392,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             }
         } else {
             val p1 = firstPoint!!; val p2 = PointF(x, y); overlayPoints.add(p2)
+            // Apple-style: pulse + clear placement state
+            binding.overlayView.placingSecondPoint = false
+            binding.overlayView.triggerPulse(x, y)
             // Check IMU motion between two taps
             val imuAvail = imuHelper.isAvailable()
             val motion = if (imuAvail) imuHelper.checkMotionSince() else null
@@ -431,6 +437,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     val displayText = listOfNotNull(measuredResult + uncStr, motionWarn).joinToString("  ")
                     binding.tvDistance.text = displayText
                     binding.overlayView.lines = listOf(Pair(p1, p2)); binding.overlayView.showLineLabels = true
+                    // Apple-style: floating capsule label above line
+                    binding.overlayView.lineDistanceLabels = listOf(displayText)
                     updateOverlay(); firstPoint = null
                     saveToHistory(measuredResult, "两点")
                 }
@@ -545,6 +553,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.showLineLabels = false
         binding.overlayView.sweepDistanceCm = -1f
         binding.overlayView.sweepHistory = emptyList()
+        binding.overlayView.lineDistanceLabels = emptyList()
+        binding.overlayView.placingSecondPoint = false
         // Reset filter states so next measurement starts fresh (not from old Kalman/ToF momentum)
         depthFilter.reset()
         tofHelper.reset()
