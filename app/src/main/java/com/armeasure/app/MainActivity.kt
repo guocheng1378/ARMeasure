@@ -93,43 +93,57 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var previewDistEma = Float.NaN
     private val linePreviewRunnable = object : Runnable {
         override fun run() {
-            if (!binding.overlayView.placingSecondPoint || firstWorld3D == null) return
-            val w1 = firstWorld3D!!
+            if (!binding.overlayView.placingSecondPoint) return
+            val w1 = firstWorld3D
+            val p1 = firstPoint
+            if (w1 == null && p1 == null) return
             val cx = cachedViewWidth / 2f; val cy = cachedViewHeight / 2f
             val d2 = getRawDepthAt(cx, cy)
-            if (d2 != null && d2 > 0) {
+            if (d2 != null && d2 > 0 && d2 < 1000f) { // sanity: <10m
                 val w2 = screenToWorld3D(cx, cy, d2)
                 val (dp, dr) = if (imuHelper.isAvailable()) imuHelper.getRotationDeltaRad() else Pair(0f, 0f)
-                val rawDist = if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
-                    val (rx, ry, rz) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
-                    MeasurementEngine.distance3D(Triple(rx, ry, rz), w2)
-                } else {
-                    MeasurementEngine.distance3D(w1, w2)
-                }
-                // EMA smoothing: α=0.3 for stable display
-                previewDistEma = if (previewDistEma.isNaN()) rawDist else previewDistEma * 0.7f + rawDist * 0.3f
-                val dist = previewDistEma
+                val rawDist = if (w1 != null) {
+                    if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
+                        val (rx, ry, rz) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
+                        MeasurementEngine.distance3D(Triple(rx, ry, rz), w2)
+                    } else {
+                        MeasurementEngine.distance3D(w1, w2)
+                    }
+                } else if (p1 != null && firstDistance > 0) {
+                    // Fallback: screen-coordinate based (no world anchoring)
+                    val d1 = firstDistance
+                    MeasurementEngine.compute3DDistance(p1.x, p1.y, cx, cy, d1, d2,
+                        cachedViewWidth, cachedViewHeight, getHfovDegrees(), getVfovDegrees())
+                } else 0f
 
-                val projP1 = if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
-                    val (rx, ry, rz) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
-                    world3DToScreen(rx, ry, rz)
-                } else {
-                    world3DToScreen(w1.first, w1.second, w1.third)
-                }
-                val isLevel = imuHelper.isAvailable() && Math.abs(Math.toDegrees(imuHelper.tiltAngle.toDouble())) < 3.0
-                runOnUiThread {
-                    binding.overlayView.liveDistanceCm = dist
-                    binding.overlayView.secondPointDepthCm = d2
-                    binding.overlayView.firstPointDepthCm = firstDistance
-                    binding.overlayView.deviceIsLevel = isLevel
-                    overlayPoints.clear()
-                    overlayPoints.add(PointF(projP1.first, projP1.second))
-                    binding.overlayView.points = overlayPoints.toList()
-                    binding.tvDistance.text = formatDistance(dist)
-                    binding.overlayView.invalidate()
+                if (rawDist > 0) {
+                    previewDistEma = if (previewDistEma.isNaN()) rawDist else previewDistEma * 0.6f + rawDist * 0.4f
+                    val dist = previewDistEma
+
+                    val projP1 = if (w1 != null) {
+                        if (Math.abs(dp) > 0.005f || Math.abs(dr) > 0.005f) {
+                            val (rx, ry, rz) = MeasurementEngine.rotatePoint(w1.first, w1.second, w1.third, dp, dr)
+                            world3DToScreen(rx, ry, rz)
+                        } else {
+                            world3DToScreen(w1.first, w1.second, w1.third)
+                        }
+                    } else Pair(p1!!.x, p1.y)
+
+                    val isLevel = imuHelper.isAvailable() && Math.abs(Math.toDegrees(imuHelper.tiltAngle.toDouble())) < 3.0
+                    runOnUiThread {
+                        binding.overlayView.liveDistanceCm = dist
+                        binding.overlayView.secondPointDepthCm = d2
+                        binding.overlayView.firstPointDepthCm = firstDistance
+                        binding.overlayView.deviceIsLevel = isLevel
+                        overlayPoints.clear()
+                        overlayPoints.add(PointF(projP1.first, projP1.second))
+                        binding.overlayView.points = overlayPoints.toList()
+                        binding.tvDistance.text = formatDistance(dist)
+                        binding.overlayView.invalidate()
+                    }
                 }
             }
-            backgroundHandler?.postDelayed(this, 100) // 10 FPS preview
+            backgroundHandler?.postDelayed(this, 60) // ~16 FPS preview
         }
     }
     private var measuredResult = "--"
