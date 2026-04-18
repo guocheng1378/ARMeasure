@@ -63,6 +63,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private val depthCache = mutableMapOf<Int, Float>()
     private val maxSweepHistory = 200
 
+    // ── Debounce ──
+    private var lastTapTime = 0L
+    private var lastModeClickTime = 0L
+    private var lastUndoClickTime = 0L
+    private val TAP_DEBOUNCE_MS = 400L
+    private val MODE_DEBOUNCE_MS = 300L
+
     companion object {
         private const val TAG = "ARMeasure"
         private const val REQUEST_CAMERA = 100
@@ -300,6 +307,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun onScreenTapped(x: Float, y: Float) {
+        val now = System.currentTimeMillis()
+        if (now - lastTapTime < TAP_DEBOUNCE_MS) return
+        lastTapTime = now
         triggerAutoFocus(x, y); haptic()
         // AF needs more settling time than depth-based modes
         val settleMs = if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) 600L else 800L
@@ -665,6 +675,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun undoLastPoint() {
+        val now = System.currentTimeMillis()
+        if (now - lastUndoClickTime < MODE_DEBOUNCE_MS) return
+        lastUndoClickTime = now
         // #7: Fade-out animation
         binding.overlayView.animateFadeOut { this.undoLastPointImpl() }
     }
