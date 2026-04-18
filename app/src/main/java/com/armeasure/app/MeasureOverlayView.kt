@@ -26,6 +26,8 @@ class MeasureOverlayView @JvmOverloads constructor(
     var liveCrosshair: PointF? = null
     /** Live distance preview between first point and current cursor (cm). -1 = no data. */
     var liveDistanceCm: Float = -1f
+    /** Projected screen position of the first anchor point (moves with camera, Apple-like). */
+    var previewAnchor: PointF? = null
     /** Depth at first point (cm). Shown as small label near endpoint. */
     var firstPointDepthCm: Float = -1f
     /** Depth at second/live point (cm). */
@@ -249,30 +251,30 @@ class MeasureOverlayView @JvmOverloads constructor(
             }
         }
 
-        if (placingSecondPoint && points.size == 1) {
-            val p0 = points[0]  // first anchor point (screen center at tap time)
+        if (placingSecondPoint) {
+            // Anchor point: either projected 3D position (Apple-like) or fallback to center
+            val anchor = previewAnchor ?: PointF(width / 2f, height / 2f)
             val cx = width / 2f; val cy = height / 2f
 
-            // ── Preview line: first anchor → current center ──
-            canvas.drawLine(p0.x, p0.y, cx, cy, previewP)
+            // ── Preview line: anchor → current center ──
+            canvas.drawLine(anchor.x, anchor.y, cx, cy, previewP)
 
-            // ── First anchor: small static dot ──
-            canvas.drawCircle(p0.x, p0.y, 5f, dotP)
+            // ── Anchor dot: small, subtle ──
+            canvas.drawCircle(anchor.x, anchor.y, 5f, dotP)
 
-            // ── Center crosshair: the aim target (same as idle state, but brighter) ──
+            // ── Center crosshair: the aim target ──
             val tick = AppConstants.CROSSHAIR_SIZE
-            crossP.alpha = 255
-            crossP.strokeWidth = 2f
+            crossP.alpha = 255; crossP.strokeWidth = 2f
             canvas.drawLine(cx - tick, cy, cx - 5, cy, crossP)
             canvas.drawLine(cx + 5, cy, cx + tick, cy, crossP)
             canvas.drawLine(cx, cy - tick, cx, cy - 5, crossP)
             canvas.drawLine(cx, cy + 5, cx, cy + tick, crossP)
             canvas.drawCircle(cx, cy, 3f, dotP)
-            crossP.alpha = 255; crossP.strokeWidth = 1.5f
+            crossP.strokeWidth = 1.5f
 
             // ── Live distance on preview line ──
             if (liveDistanceCm > 0) {
-                val mx = (p0.x + cx) / 2f; val my = (p0.y + cy) / 2f
+                val mx = (anchor.x + cx) / 2f; val my = (anchor.y + cy) / 2f
                 drawLabel(canvas, String.format("%.1f cm", liveDistanceCm), mx, my)
             }
         }
