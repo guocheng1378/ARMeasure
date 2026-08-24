@@ -1,5 +1,13 @@
 # 📱 ARMeasure — Android AR测距工具
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Android-3DDC84?logo=android&logoColor=white&style=for-the-badge" alt="Android"/>
+  <img src="https://img.shields.io/badge/Kotlin-7F52FF?logo=kotlin&logoColor=white&style=for-the-badge" alt="Kotlin"/>
+  <img src="https://img.shields.io/badge/Camera2-0D47A1?style=for-the-badge" alt="Camera2"/>
+  <img src="https://img.shields.io/badge/dToF_3D-00C853?style=for-the-badge" alt="dToF"/>
+  <img src="https://img.shields.io/badge/License-MIT-2E8B57?style=for-the-badge" alt="MIT"/>
+</p>
+
 纯 Camera2 API + dToF 深度传感器实现的专业级测距应用，**零 Google/ARCore 依赖**。
 
 ## ✨ 测量模式
