@@ -2,7 +2,6 @@
 
 # Keep measurement engine (used by reflection or JNI in future)
 -keep class com.armeasure.app.MeasurementEngine { *; }
--keep class com.armeasure.app.HeightMeasureHelper { *; }
 -keep class com.armeasure.app.AngleMeasureHelper { *; }
 
 # Keep Camera2 callback classes

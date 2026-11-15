@@ -24,7 +24,7 @@ class DistanceFilter(
     private var errorCov = 1f
     private var kalmanInitialized = false
     /** Minimum error covariance — prevents filter from becoming overconfident */
-    private val minErrorCov = processNoise * 0.01f
+    private val minErrorCov = processNoise * AppConstants.KALMAN_MIN_ERROR_COV_RATIO
 
     private var lastRaw = -1f
     private var tickCount = 0

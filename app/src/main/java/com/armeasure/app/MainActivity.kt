@@ -1119,6 +1119,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     // ── Save & Share ─────────────────────────────────────────
 
     private fun saveMeasurement() {
+        // 水平仪模式没有可保存的测量：结果文本是实时倾角，不能当作测量记录入库
+        if (currentMode == Mode.LEVEL) {
+            Toast.makeText(this, R.string.err_no_measurements, Toast.LENGTH_SHORT).show(); return
+        }
         if (measuredResult == "--" || measuredResult.contains("无")) {
             Toast.makeText(this, R.string.err_no_measurements, Toast.LENGTH_SHORT).show(); return
         }

@@ -9,10 +9,6 @@ import kotlin.math.acos
  */
 object AngleMeasureHelper {
 
-    private fun fastTan(theta: Double): Float {
-        return if (Math.abs(theta) < 0.26) theta.toFloat() else Math.tan(theta).toFloat()
-    }
-
     /**
      * Compute angle at vertex (in degrees) from 3 points in 3D.
      */
@@ -35,53 +31,5 @@ object AngleMeasureHelper {
         if (len1 < 0.01f || len2 < 0.01f) return 0f
         val cosAngle = (dot / (len1 * len2)).toDouble().coerceIn(-1.0, 1.0)
         return Math.toDegrees(acos(cosAngle)).toFloat()
-    }
-
-    /**
-     * Compute angle from screen coordinates + depths.
-     */
-    fun computeAngleFromScreen(
-        vx: Float, vy: Float, vd: Float,
-        ax1: Float, ay1: Float, d1: Float,
-        ax2: Float, ay2: Float, d2: Float,
-        viewW: Float, viewH: Float,
-        intrinsics: FloatArray?, imgW: Int, imgH: Int,
-        hfovDeg: Double, vfovDeg: Double
-    ): Float {
-        // Minimum arm length check: angle is meaningless with very short arms
-        val armLen1 = MeasurementEngine.distance3D(
-            MeasurementEngine.screenTo3DFOV(vx, vy, vd, viewW, viewH, hfovDeg, vfovDeg),
-            MeasurementEngine.screenTo3DFOV(ax1, ay1, d1, viewW, viewH, hfovDeg, vfovDeg)
-        )
-        val armLen2 = MeasurementEngine.distance3D(
-            MeasurementEngine.screenTo3DFOV(vx, vy, vd, viewW, viewH, hfovDeg, vfovDeg),
-            MeasurementEngine.screenTo3DFOV(ax2, ay2, d2, viewW, viewH, hfovDeg, vfovDeg)
-        )
-        if (armLen1 < AppConstants.ANGLE_MIN_ARM_CM || armLen2 < AppConstants.ANGLE_MIN_ARM_CM) return 0f
-
-        val vertex: Triple<Float, Float, Float>
-        val arm1: Triple<Float, Float, Float>
-        val arm2: Triple<Float, Float, Float>
-
-        if (intrinsics != null && intrinsics.size >= 4) {
-            val fx = intrinsics[0]; val fy = intrinsics[1]
-            val cx = intrinsics[2]; val cy = intrinsics[3]
-            vertex = Triple(vd * (vx / viewW * imgW - cx) / fx, vd * (vy / viewH * imgH - cy) / fy, vd)
-            arm1 = Triple(d1 * (ax1 / viewW * imgW - cx) / fx, d1 * (ay1 / viewH * imgH - cy) / fy, d1)
-            arm2 = Triple(d2 * (ax2 / viewW * imgW - cx) / fx, d2 * (ay2 / viewH * imgH - cy) / fy, d2)
-        } else {
-            val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
-            val hfov = Math.toRadians(hfovDeg); val vfov = Math.toRadians(vfovDeg)
-            fun to3D(sx: Float, sy: Float, d: Float): Triple<Float, Float, Float> {
-                val nx = ((sx / viewW - 0.5f) * 2f).toDouble().coerceIn(-clamp, clamp)
-                val ny = ((0.5f - sy / viewH) * 2f).toDouble().coerceIn(-clamp, clamp)
-                return Triple(d * fastTan(nx * hfov / 2), d * fastTan(ny * vfov / 2), d)
-            }
-            vertex = to3D(vx, vy, vd)
-            arm1 = to3D(ax1, ay1, d1)
-            arm2 = to3D(ax2, ay2, d2)
-        }
-
-        return computeAngle3D(vertex, arm1, arm2)
     }
 }

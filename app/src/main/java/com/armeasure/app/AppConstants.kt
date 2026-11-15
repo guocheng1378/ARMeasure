@@ -14,7 +14,7 @@ object AppConstants {
     const val KALMAN_MIN_ERROR_COV_RATIO = 0.01f  // minErrorCov = processNoise * ratio
     const val DEPTH_SAMPLE_COUNT = 5
     const val DEPTH_SAMPLE_INTERVAL_MS = 80L
-    const val DEPTH_CONVERGENCE_THRESHOLD_MM = 50f  // 早停阈值: 标准差<6mm时提前结束
+    const val DEPTH_CONVERGENCE_THRESHOLD_MM = 50f  // 早停阈值: 标准差<50mm时提前结束
 
     // ── Depth temporal smoothing (multi-frame median) ──
     const val TEMPORAL_FRAME_COUNT = 5    // keep last N depth frames for median
@@ -23,7 +23,6 @@ object AppConstants {
     const val DEPTH_BILATERAL_SIGMA_MM = 30f        // depth similarity sigma for bilateral filter (mm) — small = sharp edges
 
     // ── Depth fusion variances (cm²) ──
-    const val TOF_VARIANCE = 25f           // 5cm σ
     const val DEPTH16_VARIANCE_CLOSE = 64f // <1m
     const val DEPTH16_VARIANCE_FAR = 144f  // ≥1m
     const val DEPTH16_CLOSE_THRESHOLD_CM = 100f
@@ -50,10 +49,6 @@ object AppConstants {
     const val NEIGHBORHOOD_RADIUS_NEAR = 1  // 3×3
     const val NEIGHBORHOOD_RADIUS_MID = 2   // 5×5
     const val NEIGHBORHOOD_RADIUS_FAR = 3   // 7×7
-
-    // ── UI ──
-    const val CROSSHAIR_SIZE = 20f
-    const val PLACEMENT_CROSSHAIR_SIZE = 24f
 
     // ── Timing / debounce ──
     const val TAP_DEBOUNCE_MS = 400L
@@ -88,11 +83,6 @@ object AppConstants {
 
     // ── Level mode ──
     const val LEVEL_THRESHOLD_DEG = 1.0f        // degrees — considered "level" below this
-    const val LEVEL_UPDATE_INTERVAL_MS = 50L     // sensor refresh rate for level display
-
-    // ── Height / Angle ──
-    const val ANGLE_MIN_ARM_CM = 3f              // minimum arm length for valid angle
-    const val HEIGHT_MIN_POINTS_CM = 1f          // minimum height to display result
 
     // ── Settings ──
     const val SETTINGS_PREF = "armeasure_settings"
