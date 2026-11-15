@@ -111,6 +111,17 @@
             android:layout_marginBottom="8dp"
             android:strokeColor="#00FF88" />
 
+        <!-- Re-show tutorial: clears the shown flag so MainActivity displays it again on resume -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnShowTutorial"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="@string/settings_show_tutorial"
+            android:textColor="#FFCC00"
+            android:layout_marginBottom="8dp"
+            android:strokeColor="#FFCC00" />
+
         <!-- Clear History -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnClearHistory"

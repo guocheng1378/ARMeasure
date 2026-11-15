@@ -22,4 +22,63 @@
     <string name="unit_cm">厘米</string>
     <string name="unit_inch">英寸</string>
     <string name="unit_m">米</string>
+
+    <!-- Mode hints shown in tvMode -->
+    <string name="mode_hint_point">点击测距</string>
+    <string name="mode_hint_line">两点测距</string>
+    <string name="mode_hint_area">面积测量</string>
+    <string name="mode_hint_sweep">扫掠测距</string>
+    <string name="mode_hint_height">高度测量</string>
+    <string name="mode_hint_angle">角度测量</string>
+    <string name="mode_hint_level">水平仪</string>
+
+    <!-- Tutorial overlay -->
+    <string name="tutorial_title">📐 AR测距</string>
+    <string name="tutorial_tap">点击屏幕测量距离</string>
+    <string name="tutorial_modes">单点 · 两点 · 面积 · 扫掠</string>
+    <string name="tutorial_unit">长按距离切换单位</string>
+    <string name="tutorial_start">点击任意位置开始</string>
+
+    <!-- Level mode -->
+    <string name="level_ok">✓ 水平</string>
+    <string name="level_tilted">偏斜</string>
+
+    <!-- Measurement prompts -->
+    <string name="prompt_area_continue">继续点击 (%1$d/3+)</string>
+    <string name="prompt_height_top">点击物体顶部</string>
+    <string name="prompt_angle_vertex">点击角度顶点</string>
+    <string name="prompt_angle_first_arm">点击第一条边端点</string>
+    <string name="prompt_angle_second_arm">点击第二条边端点</string>
+    <string name="prompt_calculating_angle">计算角度...</string>
+    <string name="sampling_line_first">采样中(1/2) %1$d/%2$d...</string>
+    <string name="sampling_line_second">采样中(2/2) %1$d/%2$d...</string>
+    <string name="prompt_second_point">点击设置第二点</string>
+    <string name="prompt_line_sampling">采样中(2/2)...</string>
+    <string name="prompt_set_calibration">对准目标后点击屏幕</string>
+    <string name="prompt_calibration_mode">校准模式</string>
+
+    <!-- Errors / toasts -->
+    <string name="err_camera_permission">需要相机权限才能使用测距功能</string>
+    <string name="err_camera_permission_label">❌ 需要相机权限</string>
+    <string name="err_camera_permission_restart">请授予相机权限后重启应用</string>
+    <string name="err_no_depth_retry">⚠️ 无法获取深度，请对准平面重试</string>
+    <string name="err_depth_failed">⚠️ 深度获取失败</string>
+    <string name="err_no_camera">无可用摄像头</string>
+    <string name="err_no_depth_camera">设备无深度摄像头</string>
+    <string name="err_no_measurements">请先进行测量</string>
+    <string name="err_depth_on">深度摄像头已开启</string>
+    <string name="err_depth_off">深度摄像头已关闭</string>
+
+    <!-- Unit labels (long-press toast) -->
+    <string name="unit_prefix">单位: %1$s</string>
+    <string name="unit_label_cm">厘米</string>
+    <string name="unit_label_inch">英寸</string>
+    <string name="unit_label_m">米</string>
+
+    <!-- Sensor label parts -->
+    <string name="sensor_main_camera">主摄</string>
+
+    <!-- Settings page -->
+    <string name="settings_show_tutorial">重新显示教程</string>
+    <string name="settings_tutorial_reset_done">已重置，返回主界面即可看到教程</string>
 </resources>

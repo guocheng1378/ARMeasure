@@ -1,5 +1,6 @@
 package com.armeasure.app
 
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -46,9 +47,17 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         binding.btnCalibrate.setOnClickListener {
-            // Return to main activity with calibration intent
-            setResult(RESULT_OK, intent.putExtra("action", "calibrate"))
+            // Return to main activity with calibration intent.
+            // 必须新建回传 Intent：直接复用本页启动 Intent 会把 action 混入原始启动参数，
+            // 导致重复触发校准（原 bug：setResult(RESULT_OK, intent.putExtra(...))）
+            setResult(RESULT_OK, Intent().putExtra("action", "calibrate"))
             finish()
+        }
+        // 重新显示教程：清除已读标记，回到主界面 onResume 时会再次弹出
+        binding.btnShowTutorial.setOnClickListener {
+            getSharedPreferences(AppConstants.TUTORIAL_PREF, MODE_PRIVATE)
+                .edit().putBoolean(AppConstants.TUTORIAL_SHOWN_KEY, false).apply()
+            Toast.makeText(this, R.string.settings_tutorial_reset_done, Toast.LENGTH_SHORT).show()
         }
         binding.btnClearHistory.setOnClickListener {
             getSharedPreferences("armeasure_history", MODE_PRIVATE).edit().clear().apply()

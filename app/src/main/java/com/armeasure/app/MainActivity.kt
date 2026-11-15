@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.FileProvider
 import com.armeasure.app.databinding.ActivityMainBinding
@@ -27,6 +28,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private lateinit var cameraCtrl: CameraController
     private lateinit var tofHelper: TofSensorHelper
     private lateinit var imuHelper: ImuFusionHelper
+
+    /** Launches the settings screen; calibration requests come back via the result. */
+    private val settingsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data?.getStringExtra("action") == "calibrate") {
+            startCalibration()
+        }
+    }
 
     @Volatile private var depthBuffer: ShortArray? = null
     @Volatile private var depthWidth: Int = 0
@@ -49,8 +59,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var calibrationFactor = 1.0f
     private var isCalibrated = false
     private var calibrating = false
-    /** Manual reference depth override (cm). 0 = disabled, use sensor. */
-    private var manualDepthCm: Float = 0f
+
+    // ── Settings-backed state (read from "armeasure_settings" on create/resume) ──
+    private var hapticsEnabled = true
+    private var showUncertainty = true
+
+    /** Current preview zoom applied to the SurfaceView via scaleX/scaleY. */
+    private var zoomScale: Float = 1f
 
     private val historyPrefs by lazy { getSharedPreferences("armeasure_history", MODE_PRIVATE) }
     private val measurementHistory = mutableListOf<HistoryEntry>()
@@ -63,29 +78,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private val heightPoints = mutableListOf<PointF>()
     private val anglePoints = mutableListOf<PointF>()
     private var angleDepths = mutableListOf<Float>()
+    /** Gyro rotation matrix from the vertex tap to arm1 (tap 2) */
+    private var angleRotation1: FloatArray? = null
+    /** Gyro rotation matrix from arm1 (tap 2) to arm2 (tap 3) */
+    private var angleRotation2: FloatArray? = null
     private var firstPoint: PointF? = null
     @Volatile private var firstDistance: Float = 0f
     private var firstUncertainty: Float = 0f
-    /** Read smoothed depth at screen point (3×3 neighbor median) without modifying shared Kalman state. */
-    private fun getRawDepthAt(sx: Float, sy: Float): Float? {
-        val buf = depthBuffer ?: return null
-        if (buf.isEmpty() || depthWidth <= 0 || depthHeight <= 0) return null
-        val vw = cachedViewWidth; val vh = cachedViewHeight
-        if (vw <= 0 || vh <= 0) return null
-        val cx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1)
-        val cy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1)
-        // 3×3 neighbor sampling → median (robust against single-pixel noise)
-        val samples = mutableListOf<Float>()
-        for (dy in -1..1) for (dx in -1..1) {
-            val px = (cx + dx).coerceIn(0, depthWidth - 1)
-            val py = (cy + dy).coerceIn(0, depthHeight - 1)
-            val raw = buf[py * depthWidth + px].toInt() and 0x1FFF
-            if (raw in 1..8191) samples.add(raw / 10f)
-        }
-        if (samples.size < 3) return null
-        samples.sort()
-        return samples[samples.size / 2] // median
-    }
+    /** Guard against the fast double-tap race: true once the first point's
+     *  depth sampling has finished. Second tap is ignored until then. */
+    @Volatile private var firstSamplingDone = false
+    /** True once the area result was written to history for the current polygon —
+     *  prevents every extra tap on a ≥3-point polygon from spamming history. */
+    private var areaHistorySaved = false
 
     private var measuredResult = "--"
     private val sweepHistory = mutableListOf<Pair<Float, Float>>()
@@ -100,6 +105,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private var lastTapTime = 0L
     private var lastModeClickTime = 0L
     private var lastUndoClickTime = 0L
+    private var lastSweepPostMs = 0L
 
     companion object {
         private const val TAG = "ARMeasure"
@@ -146,22 +152,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
         }
-        // Show tutorial on first launch
-        val tutPrefs = getSharedPreferences(AppConstants.TUTORIAL_PREF, MODE_PRIVATE)
-        if (!tutPrefs.getBoolean(AppConstants.TUTORIAL_SHOWN_KEY, false)) {
-            binding.overlayView.showTutorial = true
-            binding.overlayView.invalidate()
-            tutPrefs.edit().putBoolean(AppConstants.TUTORIAL_SHOWN_KEY, true).apply()
-        }
+        // Tutorial display is handled in onResume so Settings can re-trigger it
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code, perms, results)
         if (code == REQUEST_CAMERA) {
             if (results.isEmpty() || results[0] != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "需要相机权限才能使用测距功能", Toast.LENGTH_LONG).show()
-                binding.tvSensor.text = "❌ 需要相机权限"
-                binding.tvDistance.text = "请授予相机权限后重启应用"
+                // 权限文案统一走资源，便于多语言维护
+                Toast.makeText(this, R.string.err_camera_permission, Toast.LENGTH_LONG).show()
+                binding.tvSensor.text = getString(R.string.err_camera_permission_label)
+                binding.tvDistance.text = getString(R.string.err_camera_permission_restart)
             }
         }
     }
@@ -170,9 +171,34 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         super.onResume()
         startBackgroundThread(); cameraCtrl.backgroundHandler = backgroundHandler
         tofHelper.registerListener(this); imuHelper.start()
+        // Re-read settings (unit/haptics/uncertainty/depth) every resume —
+        // covers the first launch and changes made in SettingsActivity
+        applySettings()
+        // Show the tutorial when the "shown" flag is clear (first launch,
+        // or after "重新显示教程" in Settings cleared it)
+        val tutPrefs = getSharedPreferences(AppConstants.TUTORIAL_PREF, MODE_PRIVATE)
+        if (!tutPrefs.getBoolean(AppConstants.TUTORIAL_SHOWN_KEY, false)) {
+            binding.overlayView.showTutorial = true
+            binding.overlayView.invalidate()
+            tutPrefs.edit().putBoolean(AppConstants.TUTORIAL_SHOWN_KEY, true).apply()
+        }
         // Level mode updates will be handled via sensor callback
         if (cameraCtrl.cameraDevice == null && cameraCtrl.captureSession == null
             && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
+    }
+
+    /** Sync all settings-backed state from SharedPreferences. */
+    private fun applySettings() {
+        val prefs = getSharedPreferences(AppConstants.SETTINGS_PREF, MODE_PRIVATE)
+        currentUnit = when (prefs.getString("unit", "cm")) {
+            "inch" -> MeasureUnit.INCH
+            "m" -> MeasureUnit.M
+            else -> MeasureUnit.CM
+        }
+        hapticsEnabled = prefs.getBoolean("haptic", true)
+        showUncertainty = prefs.getBoolean("show_uncertainty", true)
+        val depthEnabled = prefs.getBoolean("depth_enabled", false)
+        if (depthEnabled != cameraCtrl.depthCameraEnabled) toggleDepthCamera()
     }
 
     override fun onPause() {
@@ -187,12 +213,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         tofHelper.onSensorEvent(event)
         if (currentMode == Mode.LEVEL) {
             val tilt = Math.toDegrees(imuHelper.tiltAngle.toDouble()).toFloat()
-            val isLevel = tilt < 1.0f
+            val isLevel = tilt < AppConstants.LEVEL_THRESHOLD_DEG
             measuredResult = String.format("%.1f°", tilt)
             binding.overlayView.levelTiltDeg = tilt
+            // Feed pitch/roll separately so the bubble moves along the true
+            // tilt direction instead of always the 45° diagonal
+            binding.overlayView.levelPitchDeg = Math.toDegrees(imuHelper.pitch.toDouble()).toFloat()
+            binding.overlayView.levelRollDeg = Math.toDegrees(imuHelper.roll.toDouble()).toFloat()
             binding.overlayView.postInvalidate()
             runOnUiThread {
-                binding.tvDistance.text = if (isLevel) "✓ 水平 ($measuredResult)" else "偏斜 $measuredResult"
+                binding.tvDistance.text = if (isLevel) getString(R.string.level_ok) + " ($measuredResult)"
+                                         else getString(R.string.level_tilted) + " $measuredResult"
             }
         }
     }
@@ -201,6 +232,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     // ── Haptic feedback ──────────────────────────────────────
 
     private fun haptic() {
+        if (!hapticsEnabled) return
         try {
             val v = if (Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
                     else @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
@@ -209,6 +241,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun hapticComplete() {
+        if (!hapticsEnabled) return
         try {
             val v = if (Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
                     else @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
@@ -220,6 +253,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun hapticWarning() {
+        if (!hapticsEnabled) return
         try {
             val v = if (Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
                     else @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
@@ -233,7 +267,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         if (cameraOpening || cameraCtrl.cameraDevice != null) return
         cameraOpening = true
         cachedHfov = Double.NaN; cachedVfov = Double.NaN
-        val selection = cameraCtrl.selectCameras() ?: run { binding.tvSensor.text = "无可用摄像头"; cameraOpening = false; return }
+        val selection = cameraCtrl.selectCameras() ?: run { binding.tvSensor.text = getString(R.string.err_no_camera); cameraOpening = false; return }
         cameraCtrl.onDepthImageAvailable = { reader -> processDepthImage(reader) }
         cameraCtrl.captureCallback = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
@@ -261,7 +295,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             parts.add("DEPTH16")
             if (imuHelper.isAvailable()) parts.add("IMU")
         } else if (cameraCtrl.hasSeparateDepthCamera) {
-            parts.add("主摄")
+            parts.add(getString(R.string.sensor_main_camera))
         }
         if (tofHelper.hasRealTof) parts.add("ToF")
         else if (!cameraCtrl.depthCameraEnabled) parts.add("AF")
@@ -272,7 +306,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun toggleDepthCamera() {
         if (cameraOpening) return
         if (!cameraCtrl.hasSeparateDepthCamera && !cameraCtrl.hasDepthMap) {
-            Toast.makeText(this, "设备无深度摄像头", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.err_no_depth_camera, Toast.LENGTH_SHORT).show()
             return
         }
         cameraOpening = true
@@ -282,7 +316,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             runOnUiThread {
                 updateDepthToggleButton()
                 updateSensorLabel()
-                val msg = if (enabled) "深度摄像头已开启" else "深度摄像头已关闭"
+                val msg = if (enabled) getString(R.string.err_depth_on) else getString(R.string.err_depth_off)
                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
             }
         }
@@ -294,18 +328,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     // ── Measurement ──────────────────────────────────────────
 
-    private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null, skipImu: Boolean = false): Float? {
-        // Manual reference depth override (for ToF-only devices)
-        if (manualDepthCm > 0) {
-            var raw = manualDepthCm
-            if (isCalibrated) raw *= calibrationFactor
-            if (!skipImu && imuHelper.isAvailable()) {
-                val vw = cachedViewWidth; val vh = cachedViewHeight
-                return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh, raw) else imuHelper.compensateDepth(raw)
-            }
-            return raw
-        }
-
+    private fun getDistanceAt(sx: Float, sy: Float, depthFilterOverride: DistanceFilter? = null): Float? {
         // 深度采集: Depth16 + ToF + AF 自适应融合
         val activeFilter = depthFilterOverride ?: depthFilter
         var depthMapCm: Float? = null
@@ -357,11 +380,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             raw = afCm
         }
 
+        // NOTE: IMU-based depth scaling was removed — tilting the device does not
+        // scale the along-axis depth reading (the old cos(tilt) multiplication made
+        // flat-wall readings shrink as the phone tilted, the opposite of reality).
+        // Rotation is instead handled as a proper 3D frame change during
+        // multi-point measurement (see handleLineTap / handleHeightTap / handleAngleTap).
         if (raw != null && raw > 0 && isCalibrated) raw = raw * calibrationFactor
-        if (!skipImu && raw != null && raw > 0 && imuHelper.isAvailable()) {
-            val vw = cachedViewWidth; val vh = cachedViewHeight
-            return if (vw > 0 && vh > 0) raw * imuHelper.getCorrectionFactor(sx, sy, vw, vh, raw) else imuHelper.compensateDepth(raw)
-        }
         return raw
     }
 
@@ -369,7 +393,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
 
 
-    private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = AppConstants.DEPTH_SAMPLE_COUNT, intervalMs: Long = AppConstants.DEPTH_SAMPLE_INTERVAL_MS, skipImu: Boolean = false, onProgress: ((Int, Int) -> Unit)? = null, onComplete: (DepthResult?) -> Unit) {
+    private fun collectDepthSamples(sx: Float, sy: Float, sampleCount: Int = AppConstants.DEPTH_SAMPLE_COUNT, intervalMs: Long = AppConstants.DEPTH_SAMPLE_INTERVAL_MS, onProgress: ((Int, Int) -> Unit)? = null, onComplete: (DepthResult?) -> Unit) {
         val localFilter = DistanceFilter(
             windowSize = AppConstants.DEPTH_WINDOW_SIZE, alpha = 0.4f,
             maxJumpMm = AppConstants.DEPTH_MAX_JUMP_MM, maxRangeMm = AppConstants.DEPTH_MAX_RANGE_MM,
@@ -385,7 +409,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 finishSampling(samples, onComplete)
                 return
             }
-            val d = getDistanceAt(sx, sy, localFilter, skipImu)
+            val d = getDistanceAt(sx, sy, localFilter)
             if (d != null && d > 0) samples.add(d)
             sampleIndex++
             onProgress?.invoke(sampleIndex, sampleCount)
@@ -436,6 +460,52 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         cachedVfov = 2 * Math.toDegrees(Math.atan(s.height / 2.0 / f)); return cachedVfov
     }
 
+    // ── Zoom-aware coordinate mapping ────────────────────────
+
+    /**
+     * Map a screen coordinate from the zoomed preview scale back to the
+     * unzoomed camera plane. After a pinch-zoom the SurfaceView is scaled with
+     * scaleX/scaleY around its center; every depth lookup and 3D projection
+     * must invert that scale or the sampled pixels no longer match the visual
+     * target. Overlay drawing keeps the original (zoomed) screen coordinates.
+     */
+    private fun unzoom(x: Float, y: Float): PointF {
+        val zoom = zoomScale
+        if (Math.abs(zoom - 1f) < 1e-4f) return PointF(x, y)
+        val w = cachedViewWidth; val h = cachedViewHeight
+        if (w <= 0 || h <= 0) return PointF(x, y)
+        return PointF((x - w / 2f) / zoom + w / 2f, (y - h / 2f) / zoom + h / 2f)
+    }
+
+    /**
+     * Intrinsics + active array for depth→3D math. When a separate depth camera
+     * supplies the depth map, its own LENS_INTRINSIC_CALIBRATION and active array
+     * must be used (RGB intrinsics describe different optics).
+     * @return (intrinsics or null for FOV fallback, active array or null)
+     */
+    private fun depthIntrinsics(): Pair<FloatArray?, Rect?> {
+        if (cameraCtrl.hasSeparateDepthCamera) {
+            val di = cameraCtrl.depthIntrinsicCalibration
+            val da = cameraCtrl.depthSensorActiveArray
+            if (di != null && da != null) return Pair(di, da)
+        }
+        return Pair(cameraCtrl.intrinsicCalibration, cameraCtrl.rgbSensorActiveArray)
+    }
+
+    /**
+     * Screen point + depth → 3D point (cm) in the capture-time camera frame.
+     * Prefers the depth camera intrinsics, falls back to the FOV model.
+     */
+    private fun screenTo3D(sx: Float, sy: Float, depthCm: Float): Triple<Float, Float, Float> {
+        val vw = cachedViewWidth; val vh = cachedViewHeight
+        val (intr, arr) = depthIntrinsics()
+        return if (intr != null && intr.size >= 4 && vw > 0 && vh > 0 && arr != null) {
+            MeasurementEngine.screenTo3DIntrinsic(sx, sy, depthCm, vw, vh, intr, arr.width(), arr.height())
+        } else {
+            MeasurementEngine.screenTo3DFOV(sx, sy, depthCm, vw, vh, getHfovDegrees(), getVfovDegrees())
+        }
+    }
+
     private fun onScreenTapped(x: Float, y: Float) {
         val now = System.currentTimeMillis()
         if (now - lastTapTime < AppConstants.TAP_DEBOUNCE_MS) return
@@ -449,6 +519,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun onSweepMoved(x: Float, y: Float) {
+        // Throttle: touch-move events can fire at 120Hz; ~30fps is plenty for
+        // the sweep readout and avoids flooding the background handler
+        val now = System.currentTimeMillis()
+        if (now - lastSweepPostMs < 33) return
+        lastSweepPostMs = now
         backgroundHandler?.post {
             val dist = getDistanceAt(x, y)
             runOnUiThread {
@@ -470,8 +545,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun triggerAutoFocus(sx: Float, sy: Float) {
         val session = cameraCtrl.captureSession ?: return; val device = cameraCtrl.cameraDevice ?: return
         val sr = cameraCtrl.rgbSensorActiveArray ?: return; val sv = binding.surfaceView
-        val fx = (sx * sr.width() / sv.width).toInt().coerceIn(0, sr.width()-1)
-        val fy = (sy * sr.height() / sv.height).toInt().coerceIn(0, sr.height()-1)
+        // Invert the preview zoom before mapping to the sensor region
+        val uz = unzoom(sx, sy)
+        val fx = (uz.x * sr.width() / sv.width).toInt().coerceIn(0, sr.width()-1)
+        val fy = (uz.y * sr.height() / sv.height).toInt().coerceIn(0, sr.height()-1)
         val rs = (sr.width() * 0.1f).toInt().coerceAtLeast(50)
         val region = MeteringRectangle((fx-rs/2).coerceIn(0,sr.width()-rs), (fy-rs/2).coerceIn(0,sr.height()-rs), rs, rs, MeteringRectangle.METERING_WEIGHT_MAX)
         try {
@@ -512,21 +589,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun handlePointTap(x: Float, y: Float) {
         overlayPoints.clear(); overlayPoints.add(PointF(x, y))
-        binding.tvDistance.text = "采样中(0/${AppConstants.DEPTH_SAMPLE_COUNT})..."
+        binding.tvDistance.text = getString(R.string.sampling, 0, AppConstants.DEPTH_SAMPLE_COUNT)
         updateOverlay()
         collectDepthSamples(x, y, onProgress = { cur, total ->
-            runOnUiThread { binding.tvDistance.text = "采样中($cur/$total)..." }
+            runOnUiThread { binding.tvDistance.text = getString(R.string.sampling, cur, total) }
         }) { result ->
             val dist = result?.depthCm
             if (dist != null && dist > 0) lastRawCm = dist
             val unc = result?.uncertaintyCm ?: 0f
-            val uncStr = if (unc > 0.5f) "  ±${String.format("%.1f", unc)}cm" else ""
+            val uncStr = if (showUncertainty && unc > 0.5f) "  ±${String.format("%.1f", unc)}cm" else ""
             runOnUiThread {
                 binding.progressBar.visibility = android.view.View.GONE
                 measuredResult = when {
                     dist != null -> formatDistance(dist) + uncStr
                     tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"
-                    else -> "对焦中..."
+                    else -> getString(R.string.focus_error)
                 }
                 binding.tvDistance.text = measuredResult; updateOverlay()
                 if (dist != null && dist > 0) { hapticComplete(); saveToHistory(formatDistance(dist), "单点") }
@@ -544,67 +621,78 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.overlayView.lineExpandProgress = 1f
 
             firstPoint = PointF(x, y)
+            firstSamplingDone = false  // second tap is ignored until sampling finishes
             overlayPoints.clear(); overlayPoints.add(PointF(x, y))
             binding.overlayView.points = overlayPoints.toList()
             binding.overlayView.triggerPulse(x, y)
-            binding.tvDistance.text = "采样中(1/2)..."
+            binding.tvDistance.text = getString(R.string.sampling, 1, 2)
             haptic()
             if (imuHelper.isAvailable()) imuHelper.markPoint()
             collectDepthSamples(x, y, onProgress = { cur, total ->
-                runOnUiThread { binding.tvDistance.text = "采样中(1/2) $cur/$total..." }
+                runOnUiThread { binding.tvDistance.text = getString(R.string.sampling_line_first, cur, total) }
             }) { result ->
                 firstDistance = result?.depthCm ?: 0f
                 firstUncertainty = result?.uncertaintyCm ?: 0f
                 if (firstDistance < 5f || firstDistance > 2000f) {
                     firstDistance = 0f
+                    firstSamplingDone = true
                     hapticWarning()
                     runOnUiThread {
                         binding.progressBar.visibility = android.view.View.GONE
-                        binding.tvDistance.text = "⚠️ 无法获取深度，请对准平面重试"
+                        binding.tvDistance.text = getString(R.string.err_no_depth_retry)
                         firstPoint = null
                         overlayPoints.clear(); updateOverlay()
                     }
                     return@collectDepthSamples
                 }
+                firstSamplingDone = true
                 runOnUiThread {
-                    binding.tvDistance.text = "点击设置第二点"
+                    binding.tvDistance.text = getString(R.string.prompt_second_point)
                 }
             }
         } else {
             // ── 第二点: 点哪里就是哪里 ──
+            // Fast double-tap race: the first point's samples are still in
+            // flight (firstDistance not yet written) — ignore this tap instead
+            // of reporting a bogus "depth failed".
+            if (!firstSamplingDone) {
+                binding.tvDistance.text = getString(R.string.sampling, 1, 2)
+                return
+            }
             val p1 = firstPoint!!
             binding.overlayView.triggerPulse(x, y)
             haptic()
             val imuAvail = imuHelper.isAvailable()
             val motion = if (imuAvail) imuHelper.checkMotionSince() else null
+            // Capture the FULL 3D rotation (pitch+roll+yaw) that happened since
+            // the first tap BEFORE markPoint() clears the gyro integral
+            val rotationToP1Frame = if (imuAvail) imuHelper.getDeltaRotationMatrix() else null
             if (imuAvail) imuHelper.markPoint()
             val motionWarn = motion?.warning
             if (motionWarn != null) hapticWarning()
 
-            binding.tvDistance.text = "采样中(2/2)..."
+            binding.tvDistance.text = getString(R.string.prompt_line_sampling)
             overlayPoints.add(PointF(x, y))
             binding.overlayView.points = overlayPoints.toList()
 
             collectDepthSamples(x, y, onProgress = { cur, total ->
-                runOnUiThread { binding.tvDistance.text = "采样中(2/2) $cur/$total..." }
+                runOnUiThread { binding.tvDistance.text = getString(R.string.sampling_line_second, cur, total) }
             }) { result2 ->
                 val d2 = result2?.depthCm ?: 0f
                 val d1 = firstDistance
 
                 val vw = cachedViewWidth.takeIf { it > 0 } ?: binding.surfaceView.width.toFloat()
                 val vh = cachedViewHeight.takeIf { it > 0 } ?: binding.surfaceView.height.toFloat()
-                val intrinsics = cameraCtrl.intrinsicCalibration
-                val arr = cameraCtrl.rgbSensorActiveArray
-                val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
 
-                val p1Screen = PointF(p1.x, p1.y)
-                val p2Screen = PointF(x, y)
+                // Unzoom for camera-plane math; overlay keeps the raw screen coords
+                val p1Screen = unzoom(p1.x, p1.y)
+                val p2Screen = unzoom(x, y)
 
                 if (d1 < 5f || d2 < 5f || d1 > 2000f || d2 > 2000f) {
                     hapticWarning()
                     runOnUiThread {
                         binding.progressBar.visibility = android.view.View.GONE
-                        binding.tvDistance.text = "⚠️ 深度获取失败，请对准平面重试"
+                        binding.tvDistance.text = getString(R.string.err_no_depth_retry)
                         overlayPoints.clear(); updateOverlay()
                         firstPoint = null
                     }
@@ -618,17 +706,30 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     depthRatio // multiply uncertainty by ratio
                 } else 1f
 
-                val dist = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                    MeasurementEngine.compute3DDistanceIntrinsic(p1Screen.x, p1Screen.y, p2Screen.x, p2Screen.y, d1, d2, vw, vh, intrinsics, imgW, imgH)
-                } else {
-                    MeasurementEngine.compute3DDistance(p1Screen.x, p1Screen.y, p2Screen.x, p2Screen.y, d1, d2, vw, vh, getHfovDegrees(), getVfovDegrees())
-                }
+                // 3D reconstruction in the first point's camera frame:
+                // both points are projected via the depth-camera intrinsics,
+                // then p2 is rotated back through the gyro-integrated rotation
+                val p1w = screenTo3D(p1Screen.x, p1Screen.y, d1)
+                val p2w = screenTo3D(p2Screen.x, p2Screen.y, d2)
+                val p2r = if (rotationToP1Frame != null)
+                    MeasurementEngine.applyRotation(p2w.first, p2w.second, p2w.third, rotationToP1Frame)
+                else p2w
+                val dist = MeasurementEngine.distance3D(p1w, p2r)
 
-                val rawUnc = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                    MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(p1Screen.x, p1Screen.y, p2Screen.x, p2Screen.y, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, intrinsics, imgW, imgH)
-                } else {
-                    MeasurementEngine.compute3DDistanceUncertaintyFOV(p1Screen.x, p1Screen.y, p2Screen.x, p2Screen.y, d1, d2, firstUncertainty, result2?.uncertaintyCm ?: 0f, vw, vh, getHfovDegrees(), getVfovDegrees())
-                }
+                val rawUnc = if (vw > 0 && vh > 0) {
+                    val (intr, arr) = depthIntrinsics()
+                    if (intr != null && intr.size >= 4 && arr != null) {
+                        MeasurementEngine.compute3DDistanceUncertaintyIntrinsic(
+                            p1Screen.x, p1Screen.y, p2Screen.x, p2Screen.y, d1, d2,
+                            firstUncertainty, result2?.uncertaintyCm ?: 0f,
+                            vw, vh, intr, arr.width(), arr.height())
+                    } else {
+                        MeasurementEngine.compute3DDistanceUncertaintyFOV(
+                            p1Screen.x, p1Screen.y, p2Screen.x, p2Screen.y, d1, d2,
+                            firstUncertainty, result2?.uncertaintyCm ?: 0f,
+                            vw, vh, getHfovDegrees(), getVfovDegrees())
+                    }
+                } else 0f
                 val motionConfidence = when {
                     !imuAvail -> 1f; motion?.excessive == true -> 1.5f
                     motion != null && motion.rotationDeg > ImuFusionHelper.ROTATION_NOISE_FLOOR_DEG * 3 -> 1.25f
@@ -640,10 +741,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 runOnUiThread {
                     binding.progressBar.visibility = android.view.View.GONE
                     measuredResult = formatDistance(dist)
-                    val uncStr = if (totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
+                    val uncStr = if (showUncertainty && totalUnc > 0.5f) "  ±${String.format("%.1f", totalUnc)}cm" else ""
                     val displayText = listOfNotNull(measuredResult + uncStr, motionWarn).joinToString("  ")
                     binding.tvDistance.text = displayText
-                    binding.overlayView.lines = listOf(Pair(p1Screen, p2Screen))
+                    binding.overlayView.lines = listOf(Pair(PointF(p1.x, p1.y), PointF(x, y)))
                     binding.overlayView.showLineLabels = true
                     binding.overlayView.lineDistanceLabels = listOf(displayText)
                     updateOverlay(); firstPoint = null
@@ -661,8 +762,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             val area = computeArea(overlayAreaPoints, depthCache)
             measuredResult = if (area > 0) formatArea(area) else "无法计算"
             binding.tvDistance.text = measuredResult
-            if (area > 0) saveToHistory(measuredResult, "面积")
-        } else binding.tvDistance.text = "继续点击 (${overlayAreaPoints.size}/3+)"
+            // Save history once per polygon (at first closure), not on every
+            // extra tap that merely re-computes the same area
+            if (area > 0 && overlayAreaPoints.size == 3 && !areaHistorySaved) {
+                areaHistorySaved = true
+                saveToHistory(measuredResult, "面积")
+            }
+        } else binding.tvDistance.text = getString(R.string.prompt_area_continue, overlayAreaPoints.size)
         val lines = mutableListOf<Pair<PointF, PointF>>()
         for (i in 0 until overlayAreaPoints.size - 1) lines.add(Pair(overlayAreaPoints[i], overlayAreaPoints[i+1]))
         if (overlayAreaPoints.size >= 3) lines.add(Pair(overlayAreaPoints.last(), overlayAreaPoints.first()))
@@ -675,25 +781,31 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         heightPoints.add(PointF(x, y))
         binding.overlayView.triggerPulse(x, y)
         haptic()
-        
+
         if (heightPoints.size == 1) {
-            binding.tvDistance.text = "点击物体顶部"
+            binding.tvDistance.text = getString(R.string.prompt_height_top)
             overlayPoints.clear()
             overlayPoints.add(PointF(x, y))
             updateOverlay()
         } else if (heightPoints.size == 2) {
             overlayPoints.add(PointF(x, y))
             updateOverlay()
-            
+
             val p1 = heightPoints[0]; val p2 = heightPoints[1]
-            binding.tvDistance.text = "采样中..."
+            binding.tvDistance.text = getString(R.string.focus_error)
             binding.progressBar.visibility = android.view.View.VISIBLE
-            
+
+            // Capture each point's gravity (up) direction at ITS OWN tap time —
+            // height = difference of the two vertical components, each projected
+            // in the gravity frame of its own capture moment
+            val up1 = if (imuHelper.isAvailable()) imuHelper.getUpVectorCam() else null
+            if (imuHelper.isAvailable()) imuHelper.markPoint()
+
             // Collect depth at both points IN PARALLEL
             var r1: DepthResult? = null; var r2: DepthResult? = null
             var doneCount = 0
             val lock = Object()
-            
+
             fun onOneDone() {
                 synchronized(lock) {
                     doneCount++
@@ -701,20 +813,36 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 }
                 val d1 = r1?.depthCm ?: 0f; val d2 = r2?.depthCm ?: 0f
                 if (d1 <= 0 || d2 <= 0) {
-                    runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE; heightPoints.clear() }
+                    runOnUiThread {
+                        binding.tvDistance.text = getString(R.string.err_depth_failed)
+                        binding.progressBar.visibility = android.view.View.GONE; heightPoints.clear()
+                    }
                     return
                 }
-                val vw = cachedViewWidth; val vh = cachedViewHeight
-                val intrinsics = cameraCtrl.intrinsicCalibration
-                val arr = cameraCtrl.rgbSensorActiveArray
-                val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
-                
-                val height = if (intrinsics != null && intrinsics.size >= 4 && vw > 0 && vh > 0) {
-                    HeightMeasureHelper.computeHeight(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, intrinsics, imgW, imgH)
-                } else {
-                    HeightMeasureHelper.computeHeightFOV(p1.x, p1.y, d1, p2.x, p2.y, d2, vw, vh, getVfovDegrees())
-                }
-                
+                // Second tap: capture up vector + rotation before the third markPoint
+                val up2 = if (imuHelper.isAvailable()) imuHelper.getUpVectorCam() else null
+                val rotationToP1Frame = if (imuHelper.isAvailable()) imuHelper.getDeltaRotationMatrix() else null
+                if (imuHelper.isAvailable()) imuHelper.markPoint()
+
+                // Unzoom for camera-plane math; overlay keeps raw screen coords
+                val p1Screen = unzoom(p1.x, p1.y)
+                val p2Screen = unzoom(p2.x, p2.y)
+
+                // 3D points, each in its own capture-time camera frame
+                val p1w = screenTo3D(p1Screen.x, p1Screen.y, d1)
+                val p2w = screenTo3D(p2Screen.x, p2Screen.y, d2)
+
+                // Gravity projection: vertical (z) component of each point in a
+                // gravity-aligned frame built from the smoothed accelerometer up
+                // vector at its own tap. Missing up vectors (IMU absent) fall
+                // back to the device-Y assumption, matching the legacy behavior.
+                val z1 = MeasurementEngine.toGravityFrame(p1w.first, p1w.second, p1w.third, up1 ?: floatArrayOf(0f, 1f, 0f)).third
+                val p2r = if (rotationToP1Frame != null)
+                    MeasurementEngine.applyRotation(p2w.first, p2w.second, p2w.third, rotationToP1Frame)
+                else p2w
+                val z2 = MeasurementEngine.toGravityFrame(p2r.first, p2r.second, p2r.third, up2 ?: up1 ?: floatArrayOf(0f, 1f, 0f)).third
+                val height = Math.abs(z2 - z1)
+
                 runOnUiThread {
                     binding.progressBar.visibility = android.view.View.GONE
                     measuredResult = formatDistance(height)
@@ -729,7 +857,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     heightPoints.clear()
                 }
             }
-            
+
             collectDepthSamples(p1.x, p1.y) { result -> r1 = result; onOneDone() }
             collectDepthSamples(p2.x, p2.y) { result -> r2 = result; onOneDone() }
         }
@@ -739,30 +867,39 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         anglePoints.add(PointF(x, y))
         binding.overlayView.triggerPulse(x, y)
         haptic()
-        
+
         when (anglePoints.size) {
             1 -> {
-                binding.tvDistance.text = "点击第一条线端点"
+                // FIRST tap is the angle VERTEX (matches the README: 顶点+两端)
+                binding.tvDistance.text = getString(R.string.prompt_angle_first_arm)
                 overlayPoints.clear()
                 overlayPoints.add(PointF(x, y))
                 updateOverlay()
+                if (imuHelper.isAvailable()) imuHelper.markPoint()
             }
             2 -> {
-                binding.tvDistance.text = "点击第二条线端点"
+                // Second tap = first arm endpoint. Snapshot rotation since the
+                // vertex BEFORE markPoint() clears the gyro integral
+                angleRotation1 = if (imuHelper.isAvailable()) imuHelper.getDeltaRotationMatrix() else null
+                if (imuHelper.isAvailable()) imuHelper.markPoint()
+                binding.tvDistance.text = getString(R.string.prompt_angle_second_arm)
                 overlayPoints.add(PointF(x, y))
                 updateOverlay()
             }
             3 -> {
+                // Third tap = second arm endpoint
+                angleRotation2 = if (imuHelper.isAvailable()) imuHelper.getDeltaRotationMatrix() else null
+                if (imuHelper.isAvailable()) imuHelper.markPoint()
                 overlayPoints.add(PointF(x, y))
                 updateOverlay()
-                binding.tvDistance.text = "计算角度..."
+                binding.tvDistance.text = getString(R.string.prompt_calculating_angle)
                 binding.progressBar.visibility = android.view.View.VISIBLE
-                
+
                 // Get depths for all 3 points IN PARALLEL
                 val results = arrayOfNulls<DepthResult?>(3)
                 var doneCount = 0
                 val lock = Object()
-                
+
                 fun onOneDone() {
                     synchronized(lock) {
                         doneCount++
@@ -770,29 +907,42 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     }
                     val localDepths = results.map { it?.depthCm ?: 0f }
                     if (localDepths.any { it <= 0 }) {
-                        runOnUiThread { binding.tvDistance.text = "⚠️ 深度获取失败"; binding.progressBar.visibility = android.view.View.GONE; anglePoints.clear() }
+                        runOnUiThread {
+                            binding.tvDistance.text = getString(R.string.err_depth_failed)
+                            binding.progressBar.visibility = android.view.View.GONE; anglePoints.clear()
+                        }
                         return
                     }
-                    val vw = cachedViewWidth; val vh = cachedViewHeight
-                    val intrinsics = cameraCtrl.intrinsicCalibration
-                    val arr = cameraCtrl.rgbSensorActiveArray
-                    val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
-                    
-                    val angle = AngleMeasureHelper.computeAngleFromScreen(
-                        anglePoints[1].x, anglePoints[1].y, localDepths[1],
-                        anglePoints[0].x, anglePoints[0].y, localDepths[0],
-                        anglePoints[2].x, anglePoints[2].y, localDepths[2],
-                        vw, vh, intrinsics, imgW, imgH,
-                        getHfovDegrees(), getVfovDegrees()
-                    )
-                    
+
+                    // Unzoom for camera-plane math; overlay keeps raw screen coords
+                    val vScreen = unzoom(anglePoints[0].x, anglePoints[0].y)
+                    val a1Screen = unzoom(anglePoints[1].x, anglePoints[1].y)
+                    val a2Screen = unzoom(anglePoints[2].x, anglePoints[2].y)
+
+                    // Rebuild the arms in the vertex's camera frame:
+                    // arm1 was captured in frame2 (rot12 back to frame1),
+                    // arm2 in frame3 (rot23 back to frame2, then rot12 to frame1)
+                    val vertex = screenTo3D(vScreen.x, vScreen.y, localDepths[0])
+                    val a1 = screenTo3D(a1Screen.x, a1Screen.y, localDepths[1])
+                    val a1r = angleRotation1?.let {
+                        MeasurementEngine.applyRotation(a1.first, a1.second, a1.third, it)
+                    } ?: a1
+                    val a2 = screenTo3D(a2Screen.x, a2Screen.y, localDepths[2])
+                    val a2f2 = angleRotation2?.let {
+                        MeasurementEngine.applyRotation(a2.first, a2.second, a2.third, it)
+                    } ?: a2
+                    val a2r = angleRotation1?.let {
+                        MeasurementEngine.applyRotation(a2f2.first, a2f2.second, a2f2.third, it)
+                    } ?: a2f2
+                    val angle = AngleMeasureHelper.computeAngle3D(vertex, a1r, a2r)
+
                     runOnUiThread {
                         binding.progressBar.visibility = android.view.View.GONE
                         measuredResult = String.format("%.1f°", angle)
                         binding.tvDistance.text = "∠ $measuredResult"
                         binding.overlayView.lines = listOf(
-                            Pair(anglePoints[1], anglePoints[0]),
-                            Pair(anglePoints[1], anglePoints[2])
+                            Pair(anglePoints[0], anglePoints[1]),
+                            Pair(anglePoints[0], anglePoints[2])
                         )
                         binding.overlayView.lineDistanceLabels = listOf(measuredResult)
                         binding.overlayView.showLineLabels = true
@@ -803,7 +953,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                         anglePoints.clear()
                     }
                 }
-                
+
                 for (idx in 0 until 3) {
                     val capturedIdx = idx
                     collectDepthSamples(anglePoints[idx].x, anglePoints[idx].y) { result ->
@@ -821,8 +971,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.invalidate()
     }
 
-    private fun fastTan(theta: Double): Float = if (Math.abs(theta) < 0.26) theta.toFloat() else Math.tan(theta).toFloat()
-
     private fun computeArea(pts: List<PointF>, depthsCache: MutableMap<Int, Float>? = null): Float {
         if (pts.size < 3) return 0f
         val vw = cachedViewWidth; val vh = cachedViewHeight
@@ -836,19 +984,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 }
             }
             if (depths.all { it != null && it > 0 }) {
-                val intrinsics = cameraCtrl.intrinsicCalibration
+                // 与线/角度模式同口径：先逆缩放（unzoom）再走统一的 3D 投影辅助函数，
+                // 深度相机自带内参优先，FOV 模型兜底，避免面积与距离两套投影公式不一致
                 val pts3d = pts.zip(depths).map { (p, d) ->
-                    if (intrinsics != null && intrinsics.size >= 4) {
-                        val arr = cameraCtrl.rgbSensorActiveArray
-                        val imgW = arr?.width() ?: vw.toInt(); val imgH = arr?.height() ?: vh.toInt()
-                        val ix = p.x / vw * imgW; val iy = p.y / vh * imgH
-                        Triple(d!! * (ix - intrinsics[2]) / intrinsics[0], d * (iy - intrinsics[3]) / intrinsics[1], d)
-                    } else {
-                        val clamp = AppConstants.FOV_TAN_CLAMP.toDouble()
-                        val nx = (p.x/vw - 0.5f)*2f; val ny = (0.5f - p.y/vh)*2f
-                        Triple(d!! * fastTan(nx.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getHfovDegrees()) / 2),
-                               d * fastTan(ny.toDouble().coerceIn(-clamp, clamp) * Math.toRadians(getVfovDegrees()) / 2), d)
-                    }
+                    val uz = unzoom(p.x, p.y)
+                    screenTo3D(uz.x, uz.y, d!!)
                 }
                 return MeasurementEngine.computePolygonArea3D(pts3d)
             }
@@ -870,12 +1010,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.btnHeightMode?.setOnClickListener { setMode(Mode.HEIGHT) }
         binding.btnAngleMode?.setOnClickListener { setMode(Mode.ANGLE) }
         binding.btnLevelMode?.setOnClickListener { setMode(Mode.LEVEL) }
-        // Settings
-        binding.btnSettings.setOnClickListener { startActivity(android.content.Intent(this, SettingsActivity::class.java)) }
+        // Settings: 用 ActivityResult launcher 启动，便于校准入口回传 action
+        binding.btnSettings.setOnClickListener {
+            settingsLauncher.launch(android.content.Intent(this, SettingsActivity::class.java))
+        }
         binding.btnUndo.setOnClickListener { undoLastPoint() }
         binding.overlayView.onScale = { sf ->
             val sv = binding.surfaceView; val ns = (sv.scaleX * sf).coerceIn(0.5f, 5f)
             sv.scaleX = ns; sv.scaleY = ns; sv.pivotX = sv.width / 2f; sv.pivotY = sv.height / 2f
+            // 同步记录当前变焦倍数，供深度采样/3D 投影做逆缩放
+            zoomScale = ns
         }
         binding.btnHistory.setOnClickListener { startActivity(android.content.Intent(this, HistoryActivity::class.java)) }
         binding.tvDistance.setOnLongClickListener { cycleUnit(); true }
@@ -898,9 +1042,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.overlayView.lineExpandProgress = 1f
         }
         currentMode = mode; calibrating = false
+        // 模式提示文案走资源，保证与 overlay 教程/提示一致
         binding.tvMode.text = when (mode) {
-            Mode.POINT -> "点击测距"; Mode.LINE -> "两点测距"; Mode.AREA -> "面积测量"; Mode.SWEEP -> "扫掠测距"
-            Mode.HEIGHT -> "高度测量"; Mode.ANGLE -> "角度测量"; Mode.LEVEL -> "水平仪"
+            Mode.POINT -> getString(R.string.mode_hint_point); Mode.LINE -> getString(R.string.mode_hint_line)
+            Mode.AREA -> getString(R.string.mode_hint_area); Mode.SWEEP -> getString(R.string.mode_hint_sweep)
+            Mode.HEIGHT -> getString(R.string.mode_hint_height); Mode.ANGLE -> getString(R.string.mode_hint_angle)
+            Mode.LEVEL -> getString(R.string.mode_hint_level)
         }
         binding.overlayView.sweepMode = (mode == Mode.SWEEP)
         binding.overlayView.levelMode = (mode == Mode.LEVEL)
@@ -928,6 +1075,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun resetMeasurement() {
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
         heightPoints.clear(); anglePoints.clear(); angleDepths.clear()
+        // 复位各模式的中间状态：面积去重标记、线采样竞态守卫、角度帧间旋转缓存
+        areaHistorySaved = false; firstSamplingDone = false
+        angleRotation1 = null; angleRotation2 = null
+        // 数码变焦同样一并还原，避免残留缩放导致后续深度采样错位
+        binding.surfaceView.scaleX = 1f; binding.surfaceView.scaleY = 1f
+        zoomScale = 1f
                         synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
                 measuredResult = "--"; binding.tvDistance.text = "--"
@@ -949,7 +1102,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun saveMeasurement() {
         if (measuredResult == "--" || measuredResult.contains("无")) {
-            Toast.makeText(this, "请先进行测量", Toast.LENGTH_SHORT).show(); return
+            Toast.makeText(this, R.string.err_no_measurements, Toast.LENGTH_SHORT).show(); return
         }
         try {
             val sv = binding.surfaceView; val bitmap = Bitmap.createBitmap(sv.width, sv.height, Bitmap.Config.ARGB_8888)
@@ -1043,7 +1196,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                         measuredResult = if (a > 0) formatArea(a) else "无法计算"
                         binding.tvDistance.text = measuredResult
                     } else {
-                        measuredResult = if (overlayAreaPoints.isEmpty()) "--" else "继续点击 (${overlayAreaPoints.size}/3+)"
+                        measuredResult = if (overlayAreaPoints.isEmpty()) "--"
+                            else getString(R.string.prompt_area_continue, overlayAreaPoints.size)
                         binding.tvDistance.text = measuredResult
                     }
                     val lines = mutableListOf<Pair<PointF, PointF>>()
@@ -1059,7 +1213,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             Mode.HEIGHT -> {
                 if (heightPoints.isNotEmpty()) heightPoints.removeAt(heightPoints.size - 1)
                 overlayPoints.clear(); updateOverlay()
-                binding.tvDistance.text = if (heightPoints.isEmpty()) "--" else "点击物体顶部"
+                binding.tvDistance.text = if (heightPoints.isEmpty()) "--" else getString(R.string.prompt_height_top)
             }
             Mode.ANGLE -> {
                 if (anglePoints.isNotEmpty()) anglePoints.removeAt(anglePoints.size - 1)
@@ -1068,8 +1222,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 updateOverlay()
                 binding.tvDistance.text = when (anglePoints.size) {
                     0 -> "--"
-                    1 -> "点击第一条线端点"
-                    else -> "点击第二条线端点"
+                    1 -> getString(R.string.prompt_angle_first_arm)
+                    else -> getString(R.string.prompt_angle_second_arm)
                 }
             }
             else -> resetMeasurement()
@@ -1080,8 +1234,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun cycleUnit() {
         currentUnit = when (currentUnit) { MeasureUnit.CM -> MeasureUnit.INCH; MeasureUnit.INCH -> MeasureUnit.M; MeasureUnit.M -> MeasureUnit.CM }
-        val label = when (currentUnit) { MeasureUnit.CM -> "厘米"; MeasureUnit.INCH -> "英寸"; MeasureUnit.M -> "米" }
-        Toast.makeText(this, "单位: $label", Toast.LENGTH_SHORT).show()
+        // 单位标签走资源（与设置页单位选择一致）
+        val label = when (currentUnit) {
+            MeasureUnit.CM -> getString(R.string.unit_label_cm)
+            MeasureUnit.INCH -> getString(R.string.unit_label_inch)
+            MeasureUnit.M -> getString(R.string.unit_label_m)
+        }
+        Toast.makeText(this, getString(R.string.unit_prefix, label), Toast.LENGTH_SHORT).show()
         if (lastRawCm > 0 && currentMode == Mode.POINT) { measuredResult = formatDistance(lastRawCm); binding.tvDistance.text = measuredResult }
     }
 
@@ -1089,16 +1248,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun startCalibration() {
         if (calibrating) { calibrating = false; updateCalibrationUI(); return }
-        calibrating = true; binding.tvDistance.text = "对准目标后点击屏幕"; binding.tvMode.text = "校准模式"
+        calibrating = true
+        binding.tvDistance.text = getString(R.string.prompt_set_calibration)
+        binding.tvMode.text = getString(R.string.prompt_calibration_mode)
         updateCalibrationUI()
     }
 
     private fun performCalibration(sx: Float, sy: Float) {
-        // Use same pipeline as two-point: collectDepthSamples with local filter, skip IMU correction
+        // Use same pipeline as two-point: collectDepthSamples with local filter
+        //（skipImu 参数已随 IMU 统一修正移除：校准采样同样应走帧间旋转补偿，口径与测量一致）
         collectDepthSamples(sx, sy,
             sampleCount = AppConstants.CALIBRATION_SAMPLE_COUNT,
-            intervalMs = AppConstants.CALIBRATION_SAMPLE_INTERVAL_MS,
-            skipImu = true
+            intervalMs = AppConstants.CALIBRATION_SAMPLE_INTERVAL_MS
         ) { result ->
             val measured = result?.depthCm
             runOnUiThread {
@@ -1137,32 +1298,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     private fun updateCalibrationUI() {
         // Calibration UI is now in SettingsActivity
         // Keep calibration state but don't reference removed views
-    }
-
-    /** Set manual reference depth for ToF-only devices */
-    private fun setManualDepth() {
-        val input = android.widget.EditText(this).apply {
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-            hint = "到被测物体的距离 (cm)"
-            if (manualDepthCm > 0) setText(String.format("%.0f", manualDepthCm))
-        }
-        android.app.AlertDialog.Builder(this)
-            .setTitle("设置参考深度")
-            .setMessage("ToF单点传感器无法区分前景/背景。\n输入到被测物体的距离(cm)，\n用于准确计算水平距离。")
-            .setView(input)
-            .setPositiveButton("设置") { _, _ ->
-                val v = input.text.toString().toFloatOrNull()
-                if (v != null && v > 0) {
-                    manualDepthCm = v; updateCalibrationUI()
-                    Toast.makeText(this, "参考深度: ${v.toInt()}cm (再按一次清除)", Toast.LENGTH_SHORT).show()
-                }
-            }
-            .setNeutralButton("清除") { _, _ ->
-                manualDepthCm = 0f; updateCalibrationUI()
-                Toast.makeText(this, "已清除参考深度", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("取消", null)
-            .show()
     }
 
     // ── History ──────────────────────────────────────────────
@@ -1258,15 +1393,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             if (buf.isEmpty() || depthWidth <= 0 || depthHeight <= 0) return null
             val vw = cachedViewWidth; val vh = cachedViewHeight
             if (vw <= 0 || vh <= 0) return null
+            // 逆缩放：屏幕点若处于数码变焦状态，先映射回原始取景坐标，避免深度采样随 zoom 偏移
+            val uz = unzoom(sx, sy)
+            val ux = uz.x; val uy = uz.y
             val dx: Int; val dy: Int
             val sep = cameraCtrl.depthCameraDevice?.id != cameraCtrl.cameraDevice?.id
             if (sep && cameraCtrl.depthSensorActiveArray != null && cameraCtrl.rgbSensorActiveArray != null) {
                 val dep = cameraCtrl.depthSensorActiveArray!!
-                dx = (sx / vw * dep.width()).toInt().coerceIn(0, depthWidth - 1)
-                dy = (sy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
+                dx = (ux / vw * dep.width()).toInt().coerceIn(0, depthWidth - 1)
+                dy = (uy / vh * dep.height()).toInt().coerceIn(0, depthHeight - 1)
             } else {
-                dx = (sx / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1)
-                dy = (sy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1)
+                dx = (ux / vw * depthWidth).toInt().coerceIn(0, depthWidth - 1)
+                dy = (uy / vh * depthHeight).toInt().coerceIn(0, depthHeight - 1)
             }
 
             // Temporal median: center pixel across N frames
