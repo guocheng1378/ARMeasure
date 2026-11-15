@@ -5,7 +5,6 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.atan2
 import kotlin.math.acos
@@ -38,50 +37,63 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
     private var snapTimestamp = 0L
     private var hasSnapshot = false
 
-    // Accumulated rotation since snapshot (rad)
+    // Accumulated rotation since snapshot (rad) — body-rate gyro integral, usable
+    // as an axis-angle vector for full 3D rotation compensation (pitch+roll+yaw).
     private var accumGyroX = 0.0; private var accumGyroY = 0.0; private var accumGyroZ = 0.0
     // #7: proper velocity integration via trapezoidal rule
     private var integratedVelocityMs = 0.0  // ∫|a(t)|dt in m/s
     private var lastLinAccelTimestamp = 0L
     private var motionSamples = 0
 
+    // ── Smoothed "up" (gravity) direction in device/camera frame ──
+    // At rest the accelerometer measures the reaction to gravity, which points up.
+    // Low-pass filtered for noise rejection; used for gravity-frame height projection.
+    private var upSmoothX = 0f; private var upSmoothY = 0f; private var upSmoothZ = 0f
+    private var upFilterInit = false
+
     companion object {
         // Thresholds — tuned for phone held by hand (using constants)
         const val MAX_ROTATION_DEG = AppConstants.MAX_ROTATION_DEG
         const val MAX_VELOCITY_MS = AppConstants.MAX_VELOCITY_MS
         const val ROTATION_NOISE_FLOOR_DEG = AppConstants.ROTATION_NOISE_FLOOR_DEG
+        // Low-pass coefficient for the smoothed up vector (0..1, higher = snappier)
+        private const val UP_SMOOTHING_ALPHA = 0.15f
+    }
+
+    // ── Rotation compensation & gravity frame ──
+
+    /**
+     * Full 3D rotation matrix (row-major) describing how the camera frame rotated
+     * between the last markPoint() and now, derived from the body-rate gyro integral.
+     * Convention: v_at_markPoint = R · v_now (rotates a vector expressed in the
+     * CURRENT camera frame back into the frame at markPoint time). Includes yaw,
+     * unlike the old pitch/roll-only compensation.
+     * @return 3×3 matrix, or null when no point is marked / rotation is negligible.
+     */
+    fun getDeltaRotationMatrix(): FloatArray? {
+        if (!hasSnapshot) return null
+        // Treat sub-noise-floor rotation as identity to avoid matrix churn
+        val mag = sqrt(accumGyroX * accumGyroX + accumGyroY * accumGyroY + accumGyroZ * accumGyroZ)
+        if (mag < Math.toRadians(ROTATION_NOISE_FLOOR_DEG.toDouble())) return null
+        return MeasurementEngine.rotationMatrixFromAxisAngle(accumGyroX, accumGyroY, accumGyroZ)
     }
 
     /**
-     * 倾斜补偿: 深度传感器测量的是沿传感器轴线的距离，
-     * 当设备倾斜时，实际垂直距离 = 测量值 × cos(tilt)
-     * 但水平偏移也要考虑: 实际距离 = sqrt(depth² - 垂直偏移²)
-     * 简化为: depth * cos(tilt)，当倾斜<60°时安全
+     * Normalized, low-pass filtered "up" (gravity) direction in the current
+     * camera/device frame. Each depth sample should be paired with the up vector
+     * at its own capture time so vertical (height) projection stays correct
+     * while the device moves between taps.
+     * @return float[3] unit vector, or null before the first accelerometer sample.
      */
-    fun compensateDepth(depthCm: Float): Float {
-        if (depthCm <= 0) return depthCm
-        val c = cos(tiltAngle.toDouble()).toFloat()
-        return if (c > 0.5f) depthCm * c else depthCm * 0.5f // 倾斜过大时用保守估计
-    }
-
-    /**
-     * 位置+倾斜修正因子: 考虑屏幕位置(pitch/roll偏移)和边缘惩罚。
-     * 返回值用于乘以原始深度: correctedDepth = rawDepth * factor
-     */
-    fun getCorrectionFactor(sx: Float, sy: Float, vw: Float, vh: Float, depthCm: Float = 0f): Float {
-        val c = cos(tiltAngle.toDouble()).toFloat()
-        if (c <= 0.5f) return 1f
-        val nx = (sx / vw - 0.5f) * 2f
-        val ny = (0.5f - sy / vh) * 2f
-        // 倾斜引起的水平偏移修正
-        val pc = ny * sin(pitch.toDouble()).toFloat() * 0.3f
-        val rc = nx * sin(roll.toDouble()).toFloat() * 0.3f
-        // 边缘像素: 远距离时角度误差放大 → 降低置信度
-        val edgePenalty = if (depthCm > 150f) {
-            val distFromCenter = sqrt((nx * nx + ny * ny).toDouble()).toFloat()
-            (1f - distFromCenter * 0.2f).coerceAtLeast(0.4f)
-        } else 1f
-        return ((c + pc + rc) * edgePenalty).coerceIn(0.3f, 1.2f)
+    fun getUpVectorCam(): FloatArray? {
+        if (!upFilterInit) return null
+        val len = sqrt((upSmoothX * upSmoothX + upSmoothY * upSmoothY + upSmoothZ * upSmoothZ).toDouble())
+        if (len < 1e-6) return null
+        return floatArrayOf(
+            (upSmoothX / len).toFloat(),
+            (upSmoothY / len).toFloat(),
+            (upSmoothZ / len).toFloat()
+        )
     }
 
     // ── Motion detection API ──
@@ -97,12 +109,6 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         lastLinAccelTimestamp = System.nanoTime()
         motionSamples = 0
         hasSnapshot = true
-    }
-
-    /** Get pitch/roll delta since last markPoint() in radians. */
-    fun getRotationDeltaRad(): Pair<Float, Float> {
-        if (!hasSnapshot) return Pair(0f, 0f)
-        return Pair(pitch - snapPitch, roll - snapRoll)
     }
 
     data class MotionResult(
@@ -167,23 +173,13 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         return MotionResult(maxRotDeg, velocityMs, elapsedMs, excessive, warning)
     }
 
-    /** Get a motion-aware depth correction factor for depth sensor readings. */
-    fun getMotionCorrectionFactor(): Float {
-        if (!hasSnapshot) return 1f
-        val motion = checkMotionSince()
-        // When device is moving fast, depth sensors become unreliable
-        // Reduce confidence by scaling — pure heuristic
-        return when {
-            motion.excessive -> 0.85f  // significant motion → depth likely off
-            motion.rotationDeg > ROTATION_NOISE_FLOOR_DEG * 3 -> 0.9f
-            else -> 1f
-        }
-    }
-
     private val listener = object : SensorEventListener {
         override fun onSensorChanged(e: SensorEvent) {
             when (e.sensor.type) {
-                Sensor.TYPE_ACCELEROMETER -> { accelX = e.values[0]; accelY = e.values[1]; accelZ = e.values[2] }
+                Sensor.TYPE_ACCELEROMETER -> {
+                    accelX = e.values[0]; accelY = e.values[1]; accelZ = e.values[2]
+                    updateSmoothedUp()
+                }
                 Sensor.TYPE_GYROSCOPE -> processGyro(e)
                 Sensor.TYPE_LINEAR_ACCELERATION -> {
                     linAccelX = e.values[0]; linAccelY = e.values[1]; linAccelZ = e.values[2]
@@ -192,6 +188,23 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
             }
         }
         override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+    }
+
+    /**
+     * Low-pass filter the raw accelerometer into a smoothed up direction.
+     * At rest the accelerometer reads the gravity reaction (pointing up in the
+     * device frame); filtering suppresses hand-shake noise so the gravity-frame
+     * height projection stays stable.
+     */
+    private fun updateSmoothedUp() {
+        if (!upFilterInit) {
+            upSmoothX = accelX; upSmoothY = accelY; upSmoothZ = accelZ
+            upFilterInit = true
+        } else {
+            upSmoothX += UP_SMOOTHING_ALPHA * (accelX - upSmoothX)
+            upSmoothY += UP_SMOOTHING_ALPHA * (accelY - upSmoothY)
+            upSmoothZ += UP_SMOOTHING_ALPHA * (accelZ - upSmoothZ)
+        }
     }
 
     /**
@@ -276,5 +289,6 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
         hasSnapshot = false
         accumGyroX = 0.0; accumGyroY = 0.0; accumGyroZ = 0.0
         integratedVelocityMs = 0.0; lastLinAccelTimestamp = 0L; motionSamples = 0
+        // Keep upSmooth* running (it converges fast); only reset motion tracking
     }
 }
