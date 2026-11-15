@@ -9,6 +9,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
+import androidx.core.content.ContextCompat
 
 class MeasureOverlayView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
@@ -29,7 +30,12 @@ class MeasureOverlayView @JvmOverloads constructor(
     var confirmFlash: Boolean = false
     /** Level mode — shows a bubble level instead of measurement overlay */
     var levelMode: Boolean = false
-    var levelTiltDeg: Float = 0f  // current tilt angle in degrees
+    /** Current tilt angle magnitude in degrees (drives color + text) */
+    var levelTiltDeg: Float = 0f
+    /** Pitch component (rotation about X) in degrees — drives vertical bubble offset */
+    var levelPitchDeg: Float = 0f
+    /** Roll component (rotation about Y) in degrees — drives horizontal bubble offset */
+    var levelRollDeg: Float = 0f
 
     var onTap: ((Float, Float) -> Unit)? = null
     var onMove: ((Float, Float) -> Unit)? = null
@@ -77,14 +83,14 @@ class MeasureOverlayView @JvmOverloads constructor(
     private val areaLineP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#60FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 1.5f
     }
-    private val sweepCP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FFCC00"); style = Paint.Style.STROKE; strokeWidth = 3f }
+    private val sweepCP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.accent_secondary); style = Paint.Style.STROKE; strokeWidth = 3f }
     private val sweepTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; textSize = 56f; typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         setShadowLayer(8f, 2f, 2f, Color.BLACK)
     }
     private val sweepTxtBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#DD000000"); style = Paint.Style.FILL }
     private val sweepTrailP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#66FFCC00"); style = Paint.Style.STROKE; strokeWidth = 3f }
-    private val sweepDotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FFCC00"); style = Paint.Style.FILL }
+    private val sweepDotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.accent_secondary); style = Paint.Style.FILL }
     // Sweep ruler/grid
     private val sweepGridP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(AppConstants.SWEEP_GRID_ALPHA, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = 0.5f
@@ -114,13 +120,36 @@ class MeasureOverlayView @JvmOverloads constructor(
         color = Color.WHITE; textSize = 32f; textAlign = Paint.Align.CENTER
     }
     private val tutorialSubTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#AAAAAA"); textSize = 22f; textAlign = Paint.Align.CENTER
+        color = ContextCompat.getColor(context, R.color.text_secondary); textSize = 22f; textAlign = Paint.Align.CENTER
     }
     private val tutorialHandP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF88"); style = Paint.Style.STROKE; strokeWidth = 3f
+        color = ContextCompat.getColor(context, R.color.accent); style = Paint.Style.STROKE; strokeWidth = 3f
     }
     private val tutorialDotP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF88"); style = Paint.Style.FILL
+        color = ContextCompat.getColor(context, R.color.accent); style = Paint.Style.FILL
+    }
+
+    // Level-mode paints — pre-allocated once to avoid per-frame allocation (GC jitter)
+    private val levelCircleP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#40FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 2f
+    }
+    private val levelRingP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#20FFFFFF"); style = Paint.Style.STROKE; strokeWidth = 1f
+    }
+    private val levelBubbleP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val levelGlowP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL; maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
+    }
+    private val levelTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 28f; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); textAlign = Paint.Align.CENTER
+    }
+    private val levelTiltTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#FFCC00"); textSize = 32f
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD); textAlign = Paint.Align.CENTER
+        setShadowLayer(4f, 1f, 1f, Color.BLACK)
+    }
+    private val levelDirP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#88FFFFFF"); textSize = 18f; textAlign = Paint.Align.CENTER
     }
 
     private val rRect = Rect()
@@ -332,78 +361,50 @@ class MeasureOverlayView @JvmOverloads constructor(
         val dotR = 12f  // bubble dot radius
 
         // Outer circle
-        val circleP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#40FFFFFF")
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-        }
-        c.drawCircle(cx, cy, bubbleRadius, circleP)
+        c.drawCircle(cx, cy, bubbleRadius, levelCircleP)
 
         // Crosshair
         c.drawLine(cx - 20f, cy, cx + 20f, cy, crossP)
         c.drawLine(cx, cy - 20f, cx, cy + 20f, crossP)
 
         // Center target rings
-        val ring30 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#20FFFFFF")
-            style = Paint.Style.STROKE
-            strokeWidth = 1f
-        }
-        c.drawCircle(cx, cy, 30f, ring30)
-        c.drawCircle(cx, cy, 60f, ring30)
+        c.drawCircle(cx, cy, 30f, levelRingP)
+        c.drawCircle(cx, cy, 60f, levelRingP)
 
-        // Bubble dot — moves based on tilt
+        // Bubble dot — pitch drives vertical offset, roll drives horizontal offset
+        // (previously both axes reused the same magnitude, so the bubble always
+        // travelled the 45° diagonal regardless of actual tilt direction).
         val maxOffset = bubbleRadius - dotR - 4f
-        val tiltRad = Math.toRadians(levelTiltDeg.toDouble())
-        val isLevel = levelTiltDeg < 1.0f
-        val bubbleColor = if (isLevel) Color.parseColor("#00FF88") else Color.parseColor("#FFCC00")
-        val bubbleP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = bubbleColor
-            style = Paint.Style.FILL
-        }
-        // Clamp offset to circle
-        val rawOffset = (tiltRad * 200).toFloat()  // scale factor for visual movement
-        val bx = cx + rawOffset.coerceIn(-maxOffset, maxOffset)
-        val by = cy + rawOffset.coerceIn(-maxOffset, maxOffset)
-        c.drawCircle(bx, by, dotR, bubbleP)
+        val pitchRad = Math.toRadians(levelPitchDeg.toDouble())
+        val rollRad = Math.toRadians(levelRollDeg.toDouble())
+        val offX = (rollRad * 200).toFloat()
+        val offY = (pitchRad * 200).toFloat()
+        // Clamp the offset VECTOR to the circle (not each axis independently)
+        val offLen = Math.sqrt((offX * offX + offY * offY).toDouble()).toFloat()
+        val scale = if (offLen > maxOffset) maxOffset / offLen else 1f
+        val bx = cx + offX * scale
+        val by = cy + offY * scale
+        val isLevel = levelTiltDeg < AppConstants.LEVEL_THRESHOLD_DEG
+        val bubbleColor = if (isLevel) ContextCompat.getColor(context, R.color.accent)
+                          else ContextCompat.getColor(context, R.color.accent_secondary)
+        levelBubbleP.color = bubbleColor
+        c.drawCircle(bx, by, dotR, levelBubbleP)
 
         // Glow for level state
         if (isLevel) {
-            val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#3000FF88")
-                style = Paint.Style.FILL
-                maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
-            }
-            c.drawCircle(bx, by, dotR + 4f, glowP)
+            levelGlowP.color = Color.parseColor("#3000FF88")
+            c.drawCircle(bx, by, dotR + 4f, levelGlowP)
 
             // Level indicator text
-            val levelText = "✓ 水平"
-            val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#00FF88")
-                textSize = 28f
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                textAlign = Paint.Align.CENTER
-            }
-            c.drawText(levelText, cx, cy + bubbleRadius + 50f, txtP)
+            val levelText = context.getString(R.string.level_ok)
+            levelTxtP.color = ContextCompat.getColor(context, R.color.accent)
+            c.drawText(levelText, cx, cy + bubbleRadius + 50f, levelTxtP)
         } else {
             val tiltText = String.format("%.1f°", levelTiltDeg)
-            val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#FFCC00")
-                textSize = 32f
-                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                textAlign = Paint.Align.CENTER
-                setShadowLayer(4f, 1f, 1f, Color.BLACK)
-            }
-            c.drawText(tiltText, cx, cy + bubbleRadius + 50f, txtP)
+            c.drawText(tiltText, cx, cy + bubbleRadius + 50f, levelTiltTxtP)
 
             // Direction indicator
-            val dirText = "偏斜"
-            val dirP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#88FFFFFF")
-                textSize = 18f
-                textAlign = Paint.Align.CENTER
-            }
-            c.drawText(dirText, cx, cy + bubbleRadius + 80f, dirP)
+            c.drawText(context.getString(R.string.level_tilted), cx, cy + bubbleRadius + 80f, levelDirP)
         }
     }
 
@@ -445,53 +446,15 @@ class MeasureOverlayView @JvmOverloads constructor(
         c.drawCircle(x, y, 2.5f, dotP)
     }
 
-    /** Small depth label near endpoint (e.g. "120cm"). */
-    private val depthTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#CCFFFFFF"); textSize = 18f
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
-        textAlign = Paint.Align.CENTER
-    }
-    private val depthTxtBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#99000000"); style = Paint.Style.FILL
-    }
-    private fun drawDepthLabel(c: Canvas, text: String, x: Float, y: Float, above: Boolean) {
-        depthTxtP.getTextBounds(text, 0, text.length, rRect)
-        val w = rRect.width() / 2f + 8f; val h = rRect.height() / 2f + 4f
-        val ly = if (above) y - 28f else y + 36f
-        val rect = RectF(x - w, ly - h, x + w, ly + h)
-        c.drawRoundRect(rect, 6f, 6f, depthTxtBgP)
-        c.drawText(text, x, ly + rRect.height() / 2f, depthTxtP)
-    }
-
-    /** Level indicator badge (Apple style: green pill when device is level). */
-    private val levelTxtP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF88"); textSize = 20f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        textAlign = Paint.Align.CENTER
-    }
-    private val levelBgP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#B3000000"); style = Paint.Style.FILL
-    }
-    private val levelBorderP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8000FF88"); style = Paint.Style.STROKE; strokeWidth = 1.5f
-    }
-    private fun drawLevelBadge(c: Canvas) {
-        val text = "◎ 水平"
-        levelTxtP.getTextBounds(text, 0, text.length, rRect)
-        val cx = width / 2f; val y = 50f
-        val w = rRect.width() / 2f + 16f; val h = rRect.height() / 2f + 8f
-        val rect = RectF(cx - w, y - h, cx + w, y + h)
-        c.drawRoundRect(rect, h, h, levelBgP)
-        c.drawRoundRect(rect, h, h, levelBorderP)
-        c.drawText(text, cx, y + rRect.height() / 2f, levelTxtP)
-    }
-
     private fun drawLabel(c: Canvas, text: String, x: Float, y: Float) {
         txtP.getTextBounds(text, 0, text.length, rRect)
         val w = rRect.width()/2f + 14f; val h = rRect.height()/2f + 8f; val ly = y - 25f
-        val rect = RectF(x - w, ly - h, x + w, ly + h)
+        // Clamp the label so it never draws half off-screen
+        val cx = x.coerceIn(w, width - w)
+        val cy = ly.coerceIn(h, height - h)
+        val rect = RectF(cx - w, cy - h, cx + w, cy + h)
         c.drawRoundRect(rect, h, h, txtBgP); c.drawRoundRect(rect, h, h, txtBorderP)
-        c.drawText(text, x, ly + rRect.height()/2f, txtP)
+        c.drawText(text, cx, cy + rRect.height()/2f, txtP)
     }
 
     private var sweepTextCached: String = ""
@@ -550,8 +513,8 @@ class MeasureOverlayView @JvmOverloads constructor(
         val cx = width / 2f; val cy = height / 2f
         c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), tutorialBgP)
 
-        c.drawText("📐 AR测距", cx, cy - 180f, tutorialTxtP)
-        c.drawText("点击屏幕测量距离", cx, cy - 130f, tutorialSubTxtP)
+        c.drawText(context.getString(R.string.tutorial_title), cx, cy - 180f, tutorialTxtP)
+        c.drawText(context.getString(R.string.tutorial_tap), cx, cy - 130f, tutorialSubTxtP)
 
         // Tap animation
         val tapX = cx; val tapY = cy + 20f
@@ -566,9 +529,9 @@ class MeasureOverlayView @JvmOverloads constructor(
         // Finger icon
         c.drawText("👆", cx - 12f, tapY + 60f, tutorialTxtP)
 
-        c.drawText("单点 · 两点 · 面积 · 扫掠", cx, cy + 130f, tutorialSubTxtP)
-        c.drawText("长按距离切换单位", cx, cy + 170f, tutorialSubTxtP)
-        c.drawText("点击任意位置开始", cx, cy + 230f, tutorialTxtP.apply { textSize = 28f })
+        c.drawText(context.getString(R.string.tutorial_modes), cx, cy + 130f, tutorialSubTxtP)
+        c.drawText(context.getString(R.string.tutorial_unit), cx, cy + 170f, tutorialSubTxtP)
+        c.drawText(context.getString(R.string.tutorial_start), cx, cy + 230f, tutorialTxtP.apply { textSize = 28f })
         tutorialTxtP.textSize = 32f // restore
     }
 
