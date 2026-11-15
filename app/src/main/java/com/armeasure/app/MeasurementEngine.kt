@@ -28,9 +28,10 @@ object MeasurementEngine {
     fun rotationMatrixFromAxisAngle(vx: Double, vy: Double, vz: Double): FloatArray {
         val angle = sqrt(vx * vx + vy * vy + vz * vz)
         if (angle < 1e-9) return floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-        val ax = vx / angle; val ay = vy / angle; val az = vz / angle
+        // 轴向量统一取 Float：矩阵元素全部按 Float 参与运算，避免 Double/Float 混用
+        val ax = (vx / angle).toFloat(); val ay = (vy / angle).toFloat(); val az = (vz / angle).toFloat()
         val c = Math.cos(angle).toFloat(); val s = Math.sin(angle).toFloat()
-        val t = (1.0 - c).toFloat()
+        val t = 1f - c
         return floatArrayOf(
             t * ax * ax + c,      t * ax * ay - s * az, t * ax * az + s * ay,
             t * ax * ay + s * az, t * ay * ay + c,      t * ay * az - s * ax,
