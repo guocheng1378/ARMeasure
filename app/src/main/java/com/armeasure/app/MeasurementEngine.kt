@@ -8,82 +8,75 @@ import kotlin.math.sqrt
  */
 object MeasurementEngine {
 
-    /** Small-angle optimization: tan(θ) ≈ θ when |θ| < 0.26 rad (~15°), error < 1% */
-    private fun fastTan(theta: Double): Float {
+    /**
+     * Small-angle shortcut: tan(θ) ≈ θ for |θ| < 0.26 rad (~15°).
+     * NOTE: worst-case error at the threshold is ~2.3% (tan(0.26) ≈ 0.2661),
+     * not <1%. Kept only to avoid Math.tan() on the hot path; use Math.tan
+     * if exactness matters more than speed.
+     */
+    fun fastTan(theta: Double): Float {
         return if (Math.abs(theta) < 0.26) theta.toFloat() else Math.tan(theta).toFloat()
     }
 
     /**
-     * Rotate a 3D point (x, y, z) by pitch and roll angles (radians).
-     * Used to compensate camera orientation change between two measurement points.
-     * Pitch rotates around X axis (vertical tilt), roll rotates around Y axis (horizontal tilt).
-     * @return rotated (x, y, z)
+     * Build a 3×3 rotation matrix (row-major, 9 elements) from an axis-angle
+     * vector (Rodrigues' formula): axis = v/|v|, angle = |v| (radians).
+     * Convention: the returned matrix rotates vectors expressed in the NEW
+     * camera frame back into the OLD frame, i.e. v_old = R · v_new, where the
+     * axis-angle vector is the body-rate gyro integral between the two frames.
      */
-    fun rotatePoint(x: Float, y: Float, z: Float, pitchRad: Float, rollRad: Float): Triple<Float, Float, Float> {
-        val cp = Math.cos(pitchRad.toDouble()).toFloat()
-        val sp = Math.sin(pitchRad.toDouble()).toFloat()
-        val cr = Math.cos(rollRad.toDouble()).toFloat()
-        val sr = Math.sin(rollRad.toDouble()).toFloat()
-        // Rotate by pitch around X: y' = y*cp - z*sp, z' = y*sp + z*cp
-        val y1 = y * cp - z * sp
-        val z1 = y * sp + z * cp
-        // Rotate by roll around Y: x' = x*cr + z1*sr, z'' = -x*sr + z1*cr
-        val x1 = x * cr + z1 * sr
-        val z2 = -x * sr + z1 * cr
-        return Triple(x1, y1, z2)
+    fun rotationMatrixFromAxisAngle(vx: Double, vy: Double, vz: Double): FloatArray {
+        val angle = sqrt(vx * vx + vy * vy + vz * vz)
+        if (angle < 1e-9) return floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        val ax = vx / angle; val ay = vy / angle; val az = vz / angle
+        val c = Math.cos(angle).toFloat(); val s = Math.sin(angle).toFloat()
+        val t = (1.0 - c).toFloat()
+        return floatArrayOf(
+            t * ax * ax + c,      t * ax * ay - s * az, t * ax * az + s * ay,
+            t * ax * ay + s * az, t * ay * ay + c,      t * ay * az - s * ax,
+            t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c
+        )
     }
 
     /**
-     * Compute 3D distance between two points with IMU rotation compensation.
-     * Un-rotates point2 back to point1's camera frame before computing distance.
-     * @param deltaPitchRad pitch change from point1 to point2 (radians)
-     * @param deltaRollRad roll change from point1 to point2 (radians)
-     * @return distance in cm
+     * Apply a 3×3 row-major rotation matrix to a 3D vector.
      */
-    fun compute3DDistanceIntrinsicRotated(
-        x1: Float, y1: Float, x2: Float, y2: Float,
-        d1: Float, d2: Float,
-        viewW: Float, viewH: Float,
-        intrinsics: FloatArray, imgW: Int, imgH: Int,
-        deltaPitchRad: Float, deltaRollRad: Float
-    ): Float {
-        val fx = intrinsics[0]; val fy = intrinsics[1]
-        val cx = intrinsics[2]; val cy = intrinsics[3]
-        val ix1 = x1 / viewW * imgW; val iy1 = y1 / viewH * imgH
-        val ix2 = x2 / viewW * imgW; val iy2 = y2 / viewH * imgH
-        val wx1 = d1 * (ix1 - cx) / fx
-        val wy1 = d1 * (iy1 - cy) / fy
-        val wz1 = d1
-        val wx2 = d2 * (ix2 - cx) / fx
-        val wy2 = d2 * (iy2 - cy) / fy
-        val wz2 = d2
-        // Un-rotate point2 to point1's frame
-        val (rx2, ry2, rz2) = rotatePoint(wx2, wy2, wz2, -deltaPitchRad, -deltaRollRad)
-        return sqrt((wx1 - rx2) * (wx1 - rx2) + (wy1 - ry2) * (wy1 - ry2) + (wz1 - rz2) * (wz1 - rz2))
+    fun applyRotation(x: Float, y: Float, z: Float, r: FloatArray): Triple<Float, Float, Float> {
+        return Triple(
+            r[0] * x + r[1] * y + r[2] * z,
+            r[3] * x + r[4] * y + r[5] * z,
+            r[6] * x + r[7] * y + r[8] * z
+        )
     }
 
-    fun compute3DDistanceRotated(
-        x1: Float, y1: Float, x2: Float, y2: Float,
-        d1: Float, d2: Float,
-        viewW: Float, viewH: Float,
-        hfovDeg: Double, vfovDeg: Double,
-        deltaPitchRad: Float, deltaRollRad: Float
-    ): Float {
-        val clampFactor = AppConstants.FOV_TAN_CLAMP.toDouble()
-        val hfov = Math.toRadians(hfovDeg)
-        val vfov = Math.toRadians(vfovDeg)
-        val nx1 = ((x1 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
-        val ny1 = ((0.5f - y1 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
-        val nx2 = ((x2 / viewW - 0.5f) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
-        val ny2 = ((0.5f - y2 / viewH) * 2f).toDouble().coerceIn(-clampFactor, clampFactor)
-        val wx1 = d1 * fastTan(nx1 * hfov / 2)
-        val wy1 = d1 * fastTan(ny1 * vfov / 2)
-        val wz1 = d1
-        val wx2 = d2 * fastTan(nx2 * hfov / 2)
-        val wy2 = d2 * fastTan(ny2 * vfov / 2)
-        val wz2 = d2
-        val (rx2, ry2, rz2) = rotatePoint(wx2, wy2, wz2, -deltaPitchRad, -deltaRollRad)
-        return sqrt((wx1 - rx2) * (wx1 - rx2) + (wy1 - ry2) * (wy1 - ry2) + (wz1 - rz2) * (wz1 - rz2))
+    /**
+     * Express a camera-frame 3D point in a gravity-aligned frame: the returned
+     * z component is the vertical (up) component. Uses the device "up" unit
+     * vector measured in the camera frame (from the accelerometer). Yaw is
+     * irrelevant for the vertical axis, so no heading reference is needed.
+     * @param upCam normalized up direction in camera frame (length 3)
+     */
+    fun toGravityFrame(x: Float, y: Float, z: Float, upCam: FloatArray): Triple<Float, Float, Float> {
+        val len = sqrt((upCam[0] * upCam[0] + upCam[1] * upCam[1] + upCam[2] * upCam[2]).toDouble()).toFloat()
+        if (len < 1e-6f) return Triple(x, y, z)
+        val ux = upCam[0] / len; val uy = upCam[1] / len; val uz = upCam[2] / len
+        // Build a horizontal basis orthogonal to up: pick the least-aligned world axis.
+        val ex: Float; val ey: Float; val ez: Float
+        if (Math.abs(ux) < 0.9f) { ex = 1f; ey = 0f; ez = 0f }
+        else { ex = 0f; ey = 1f; ez = 0f }
+        // e1 = e - (e·u)u  (Gram-Schmidt), e2 = u × e1
+        val dot = ex * ux + ey * uy + ez * uz
+        val e1x = ex - dot * ux; val e1y = ey - dot * uy; val e1z = ez - dot * uz
+        val e1Len = sqrt((e1x * e1x + e1y * e1y + e1z * e1z).toDouble()).toFloat()
+        val f1x = e1x / e1Len; val f1y = e1y / e1Len; val f1z = e1z / e1Len
+        val f2x = uy * f1z - uz * f1y
+        val f2y = uz * f1x - ux * f1z
+        val f2z = ux * f1y - uy * f1x
+        return Triple(
+            x * f1x + y * f1y + z * f1z,
+            x * f2x + y * f2y + z * f2z,
+            x * ux + y * uy + z * uz
+        )
     }
 
     /**
@@ -386,55 +379,16 @@ object MeasurementEngine {
         )
     }
 
-    /**
-     * Project 3D world coordinates back to screen position (intrinsic model).
-     * @return (screenX, screenY) in view coordinates
-     */
-    fun worldToScreenIntrinsic(
-        wx: Float, wy: Float, wz: Float,
-        viewW: Float, viewH: Float,
-        intrinsics: FloatArray, imgW: Int, imgH: Int
-    ): Pair<Float, Float> {
-        if (wz <= 0.1f) return Pair(viewW / 2f, viewH / 2f) // behind camera → center
-        val fx = intrinsics[0]; val fy = intrinsics[1]
-        val cx = intrinsics[2]; val cy = intrinsics[3]
-        val px = wx * fx / wz + cx
-        val py = wy * fy / wz + cy
-        return Pair(px / imgW * viewW, py / imgH * viewH)
-    }
-
-    /**
-     * Project 3D world coordinates back to screen position (FOV model).
-     */
-    fun worldToScreenFOV(
-        wx: Float, wy: Float, wz: Float,
-        viewW: Float, viewH: Float,
-        hfovDeg: Double, vfovDeg: Double
-    ): Pair<Float, Float> {
-        val hfov = Math.toRadians(hfovDeg); val vfov = Math.toRadians(vfovDeg)
-        val nx = if (wz > 0) Math.atan((wx / wz).toDouble()) / (hfov / 2) else 0.0
-        val ny = if (wz > 0) Math.atan((wy / wz).toDouble()) / (vfov / 2) else 0.0
-        val sx = (nx / 2.0 + 0.5) * viewW
-        val sy = (0.5 - ny / 2.0) * viewH
-        return Pair(sx.toFloat(), sy.toFloat())
-    }
-
     /** Euclidean distance between two 3D points. */
     fun distance3D(p1: Triple<Float, Float, Float>, p2: Triple<Float, Float, Float>): Float {
         val dx = p1.first - p2.first; val dy = p1.second - p2.second; val dz = p1.third - p2.third
         return sqrt(dx * dx + dy * dy + dz * dz)
     }
 
-    /** Median of a sorted Float list. Assumes list is non-empty and sorted. */
+    /** Median of a Float list. Assumes the list is non-empty (sorted not required). */
     private fun List<Float>.median(): Float {
         val n = size
         return if (n % 2 == 1) this[n / 2] else (this[n / 2 - 1] + this[n / 2]) / 2f
-    }
-
-    /** Median or null if empty. */
-    private fun List<Float>.medianOrNull(): Float? {
-        if (isEmpty()) return null
-        return sorted().median()
     }
 
     /**

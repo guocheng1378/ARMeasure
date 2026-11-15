@@ -233,42 +233,46 @@ class MeasurementEngineTest {
     // ── Rotation compensation tests ──
 
     @Test
-    fun `rotatePoint with zero rotation is identity`() {
-        val (x, y, z) = MeasurementEngine.rotatePoint(10f, 20f, 100f, 0f, 0f)
+    fun `rotation matrix with zero axis-angle is identity`() {
+        // 轴角向量接近零时应返回单位矩阵，旋转保持不变
+        val r = MeasurementEngine.rotationMatrixFromAxisAngle(0.0, 0.0, 0.0)
+        val (x, y, z) = MeasurementEngine.applyRotation(10f, 20f, 100f, r)
         assertEquals(10f, x, 0.01f)
         assertEquals(20f, y, 0.01f)
         assertEquals(100f, z, 0.01f)
     }
 
     @Test
-    fun `rotatePoint pitch rotates around X axis`() {
-        // Pitch 90°: point at (0, 0, 100) → (0, -100, 0)
-        val (x, y, z) = MeasurementEngine.rotatePoint(0f, 0f, 100f, Math.toRadians(90.0).toFloat(), 0f)
+    fun `rotation matrix pitches around X axis`() {
+        // 绕 X 轴 90°：点 (0, 0, 100) 应旋转到 (0, -100, 0)
+        val r = MeasurementEngine.rotationMatrixFromAxisAngle(Math.toRadians(90.0), 0.0, 0.0)
+        val (x, y, z) = MeasurementEngine.applyRotation(0f, 0f, 100f, r)
         assertEquals(0f, x, 0.1f)
         assertEquals(-100f, y, 0.1f)
         assertEquals(0f, z, 0.1f)
     }
 
     @Test
-    fun `rotated distance equals non-rotated when delta is zero`() {
+    fun `identity rotation keeps 3D distance unchanged`() {
+        // 帧间无旋转时，对 p2 施加单位矩阵再求距，应与直接求距完全一致
         val normal = MeasurementEngine.compute3DDistance(
             400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, 65.0, 50.0
         )
-        val rotated = MeasurementEngine.compute3DDistanceRotated(
-            400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, 65.0, 50.0, 0f, 0f
+        val r = MeasurementEngine.rotationMatrixFromAxisAngle(0.0, 0.0, 0.0)
+        val (px, py, pz) = MeasurementEngine.applyRotation(680f, 900f, 200f, r)
+        val rotated = MeasurementEngine.compute3DDistance(
+            400f, 900f, px, py, 200f, pz, 1080f, 1920f, 65.0, 50.0
         )
         assertEquals(normal, rotated, 0.01f)
     }
 
     @Test
-    fun `rotated intrinsic distance equals non-rotated when delta is zero`() {
-        val intrinsics = floatArrayOf(1500f, 1500f, 1080f, 960f)
-        val normal = MeasurementEngine.compute3DDistanceIntrinsic(
-            400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, intrinsics, 2160, 1920
-        )
-        val rotated = MeasurementEngine.compute3DDistanceIntrinsicRotated(
-            400f, 900f, 680f, 900f, 200f, 200f, 1080f, 1920f, intrinsics, 2160, 1920, 0f, 0f
-        )
-        assertEquals(normal, rotated, 0.01f)
+    fun `toGravityFrame projects vertical component along up`() {
+        // 重力系 z 分量 = 点在 up 方向上的投影；与 up 垂直的点投影为 0
+        val up = floatArrayOf(0f, 1f, 0f)
+        val (_, _, vz) = MeasurementEngine.toGravityFrame(0f, 100f, 0f, up)
+        assertEquals(100f, vz, 0.01f)
+        val (_, _, vz2) = MeasurementEngine.toGravityFrame(0f, 0f, 100f, up)
+        assertEquals(0f, vz2, 0.01f)
     }
 }
