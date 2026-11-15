@@ -90,6 +90,42 @@
     <string name="settings_tutorial_reset_done">已重置，返回主界面即可看到教程</string>
     <string name="settings_about">AR测距 v1.1</string>
 
+    <!-- Calibration dialog -->
+    <string name="calibration_dialog_title">校准: 当前测量 %1$s</string>
+    <string name="calibration_dialog_message">输入实际距离 (cm) 进行校准\n(已取%1$d次采样中位数)</string>
+    <string name="calibration_hint_known_cm">已知距离 (cm)</string>
+    <string name="calibration_done">校准完成 (x%1$s)</string>
+    <string name="err_calibration_no_distance">无法获取距离，请重试</string>
+
+    <!-- Save & share -->
+    <string name="save_done">已保存: %1$s</string>
+    <string name="err_save_failed">保存失败: %1$s</string>
+    <string name="share_dialog_title">分享测量结果？</string>
+    <string name="share_dialog_ok">分享</string>
+    <string name="share_dialog_cancel">关闭</string>
+    <string name="share_chooser_title">分享测量结果</string>
+    <string name="share_text">AR测距结果: %1$s</string>
+
+    <!-- Cleared-history toast (settings page) -->
+    <string name="history_cleared">历史记录已清空</string>
+
+    <!-- Sensor label parts -->
+    <string name="sensor_not_found">未找到</string>
+    <string name="sensor_proximity_fallback">Proximity降级</string>
+    <string name="sensor_detect_error">⚠️ 传感器检测异常</string>
+
+    <!-- IMU motion warnings -->
+    <string name="imu_warn_move_both">⚠️ 设备移动过大 (旋转%1$.1f° + 平移%2$.1f m/s)</string>
+    <string name="imu_warn_rotate">⚠️ 设备旋转过大 (%1$.1f°)</string>
+    <string name="imu_warn_translate">⚠️ 设备平移过大 (%1$.1f m/s)</string>
+    <string name="imu_warn_slight">⚡ 轻微晃动 (%1$.1f°)</string>
+
+    <!-- Misc -->
+    <string name="text_near_suffix">(近)</string>
+    <string name="err_area_uncalculable">无法计算</string>
+    <string name="sweep_scanning">扫描中...</string>
+    <string name="sensor_name_matched">匹配</string>
+
     <!-- History page -->
     <string name="history_title">测量记录</string>
     <string name="history_back">返回</string>
