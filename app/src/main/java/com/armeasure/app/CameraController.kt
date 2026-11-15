@@ -49,6 +49,14 @@ class CameraController(
     /** Camera intrinsic calibration: [fx, fy, cx, cy, skew] or null if unavailable */
     @Volatile var intrinsicCalibration: FloatArray? = null
         private set
+    /**
+     * Intrinsics of the separate depth camera (when present), read from its
+     * LENS_INTRINSIC_CALIBRATION. Depth maps from a dedicated ToF/depth camera
+     * have different optics than the RGB preview, so depth-based 3D math must
+     * use the depth camera's own intrinsics, not the RGB ones.
+     */
+    @Volatile var depthIntrinsicCalibration: FloatArray? = null
+        private set
     var hasDepthMap: Boolean = false
         private set
     var depthStreamActive: Boolean = false
@@ -148,33 +156,43 @@ class CameraController(
         rgbSensorActiveArray = rgbChars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
 
         // Read intrinsic calibration: [fx, fy, cx, cy, skew]
-        // Validate: fx/fy should be positive and within active array dimension range
-        intrinsicCalibration = rgbChars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)?.let { cal ->
-            if (cal.size >= 4 && cal[0] > 0 && cal[1] > 0) {
-                val arr = rgbSensorActiveArray
-                if (arr != null) {
-                    // Sanity: fx should be roughly in [arr.width*0.5, arr.width*3] range
-                    if (cal[0] in (arr.width() * 0.3f)..(arr.width() * 5f) &&
-                        cal[2] in 0f..arr.width().toFloat() &&
-                        cal[3] in 0f..arr.height().toFloat()) {
-                        cal
-                    } else {
-                        Log.w(TAG, "Intrinsics out of expected range fx=${cal[0]} arrW=${arr.width()}, falling back to FOV")
-                        null
-                    }
-                } else cal
-            } else null
-        }
+        // Validated for positive focal lengths and sane principal point range
+        intrinsicCalibration = validateIntrinsics(
+            rgbChars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION),
+            rgbSensorActiveArray
+        )
 
         if (depthCamId != null) {
-            depthSensorActiveArray = cameraManager.getCameraCharacteristics(depthCamId)
-                .get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            val depthChars = cameraManager.getCameraCharacteristics(depthCamId)
+            depthSensorActiveArray = depthChars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            depthIntrinsicCalibration = validateIntrinsics(
+                depthChars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION),
+                depthSensorActiveArray
+            )
         }
 
         hasDepthMap = depthCamId != null
         hasSeparateDepthCamera = depthCamId != null && depthCamId != rgbId
         lastSelection = CameraSelection(rgbId, depthCamId, depthCamId == rgbId)
         return lastSelection
+    }
+
+    /**
+     * Validate a LENS_INTRINSIC_CALIBRATION array: fx/fy must be positive and
+     * sane relative to the active array, principal point must be inside it.
+     * Shared by the RGB and depth camera paths.
+     */
+    private fun validateIntrinsics(cal: FloatArray?, arr: Rect?): FloatArray? {
+        if (cal == null || cal.size < 4 || cal[0] <= 0f || cal[1] <= 0f) return null
+        if (arr == null) return cal
+        // Sanity: fx should be roughly in [arr.width*0.3, arr.width*5] range
+        if (cal[0] in (arr.width() * 0.3f)..(arr.width() * 5f) &&
+            cal[2] in 0f..arr.width().toFloat() &&
+            cal[3] in 0f..arr.height().toFloat()) {
+            return cal
+        }
+        Log.w(TAG, "Intrinsics out of expected range fx=${cal[0]} arrW=${arr.width()}, falling back to FOV")
+        return null
     }
 
     fun openCamera(selection: CameraSelection, onReady: (Boolean) -> Unit, onError: (() -> Unit)? = null) {
@@ -466,6 +484,9 @@ class CameraController(
      * #4: chooseOptimalSize — match portrait ratio correctly.
      * Camera sizes are reported in landscape (w > h), but we run in portrait mode.
      * We compare landscape ratios: choices use w/h, target uses w/h (not h/w).
+     * Also filters absurdly large/odd sizes: preview at 4K wastes power and
+     * latency, so among ratio-matched sizes we pick the smallest one whose long
+     * edge is at least 1080 px (falls back to the closest ratio overall).
      */
     private fun chooseOptimalSize(choices: Array<Size>, width: Int, height: Int): Size {
         if (choices.isEmpty()) return Size(1920, 1080)
@@ -477,6 +498,15 @@ class CameraController(
         // Camera sizes are landscape: w is long side, h is short side.
         // Match: camera.w/camera.h ≈ realH/realW (landscape ratios should be equal)
         val targetRatio = realH.toFloat() / realW
+        val ratioMatched = choices.filter {
+            Math.abs(it.width.toFloat() / it.height - targetRatio) < 0.02f
+        }
+        if (ratioMatched.isNotEmpty()) {
+            // Prefer the smallest size with long edge >= 1080; else the smallest overall
+            val usable = ratioMatched.filter { maxOf(it.width, it.height) >= 1080 }
+            return (usable.minByOrNull { it.width * it.height }
+                ?: ratioMatched.minByOrNull { it.width * it.height })!!
+        }
         return choices.minByOrNull {
             Math.abs(it.width.toFloat() / it.height - targetRatio)
         } ?: choices.first()
