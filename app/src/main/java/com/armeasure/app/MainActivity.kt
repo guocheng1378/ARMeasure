@@ -1081,9 +1081,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         // 数码变焦同样一并还原，避免残留缩放导致后续深度采样错位
         binding.surfaceView.scaleX = 1f; binding.surfaceView.scaleY = 1f
         zoomScale = 1f
-                        synchronized(depthCacheLock) { depthCache.clear() }
+        synchronized(depthCacheLock) { depthCache.clear() }
         calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
-                measuredResult = "--"; binding.tvDistance.text = "--"
+        measuredResult = "--"; binding.tvDistance.text = "--"
         binding.progressBar.visibility = android.view.View.GONE
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList()
         binding.overlayView.areaPoints = emptyList(); binding.overlayView.showLineLabels = false
