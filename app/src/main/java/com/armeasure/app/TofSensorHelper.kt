@@ -1,5 +1,6 @@
 package com.armeasure.app
 
+import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -11,6 +12,7 @@ import java.util.Locale
  * Encapsulates ToF sensor detection, warm-up, and filtered distance reading.
  */
 class TofSensorHelper(
+    private val context: Context,
     private val sensorManager: SensorManager
 ) {
 // ── 自适应置信度 ──
@@ -43,7 +45,7 @@ class TofSensorHelper(
         private set
     var hasRealTof: Boolean = false
         private set
-    var sensorLabel: String = "未找到"
+    var sensorLabel: String = context.getString(R.string.sensor_not_found)
         private set
 
     @Volatile
@@ -63,7 +65,7 @@ class TofSensorHelper(
         try {
             val allSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
             tofSensor = null
-            sensorLabel = "未找到"
+            sensorLabel = context.getString(R.string.sensor_not_found)
 
             // 1. Check known ToF sensor types
             for (tofType in KNOWN_TOF_TYPES) {
@@ -87,7 +89,7 @@ class TofSensorHelper(
                 ) {
                     tofSensor = s
                     detectedTofType = s.type
-                    sensorLabel = "${s.name} (type=${s.type} 匹配)"
+                    sensorLabel = "${s.name} (type=${s.type} ${context.getString(R.string.sensor_name_matched)})"
                     hasRealTof = true
                     return
                 }
@@ -96,14 +98,14 @@ class TofSensorHelper(
             // 3. Proximity fallback
             tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
             if (tofSensor != null) {
-                sensorLabel = "${tofSensor!!.name} (Proximity降级)"
+                sensorLabel = "${tofSensor!!.name} (${context.getString(R.string.sensor_proximity_fallback)})"
                 hasRealTof = false
             }
 
             Log.d(TAG, "ToF sensor: $sensorLabel (hasRealTof=$hasRealTof)")
         } catch (e: Exception) {
             Log.e(TAG, "detect failed", e)
-            sensorLabel = "⚠️ 传感器检测异常"
+            sensorLabel = context.getString(R.string.sensor_detect_error)
         }
     }
 
@@ -118,10 +120,17 @@ class TofSensorHelper(
         val raw = event.values[0]
         if (warmUpCount < WARM_UP_SAMPLES) { warmUpCount++; return true }
 
-        val overflowThresholdMm = tofSensor?.let { maxOf(it.maximumRange, 4000f) } ?: 4000f
-        if (raw <= 0 || raw >= overflowThresholdMm) return true
+        // Proximity sensors report centimetres while real ToF sensors report
+        // millimetres — normalise to mm so the fallback path is not 10x short
+        // (previously the degraded reading could never pass getDistanceCm's floor).
+        val rawMm = if (hasRealTof) raw else raw * 10f
 
-        val filtered = filter.filter(raw)
+        val overflowThresholdMm = tofSensor?.let {
+            if (hasRealTof) maxOf(it.maximumRange, 4000f) else maxOf(it.maximumRange * 10f, 4000f)
+        } ?: 4000f
+        if (rawMm <= 0 || rawMm >= overflowThresholdMm) return true
+
+        val filtered = filter.filter(rawMm)
         if (filtered > 0) {
             tofDistanceMm = filtered
             // Track for confidence scoring

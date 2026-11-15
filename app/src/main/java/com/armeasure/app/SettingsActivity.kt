@@ -61,7 +61,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         binding.btnClearHistory.setOnClickListener {
             getSharedPreferences("armeasure_history", MODE_PRIVATE).edit().clear().apply()
-            Toast.makeText(this, "历史记录已清空", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.history_cleared, Toast.LENGTH_SHORT).show()
         }
     }
 }

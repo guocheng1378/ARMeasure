@@ -1,5 +1,6 @@
 package com.armeasure.app
 
+import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -9,7 +10,10 @@ import kotlin.math.sqrt
 import kotlin.math.atan2
 import kotlin.math.acos
 
-class ImuFusionHelper(private val sensorManager: SensorManager) {
+class ImuFusionHelper(
+    private val context: Context,
+    private val sensorManager: SensorManager
+) {
 
     var pitch = 0f
         private set
@@ -160,13 +164,13 @@ class ImuFusionHelper(private val sensorManager: SensorManager) {
 
         val warning = when {
             maxRotDeg > MAX_ROTATION_DEG && velocityMs > MAX_VELOCITY_MS ->
-                "⚠️ 设备移动过大 (旋转${String.format("%.1f", maxRotDeg)}° + 平移${String.format("%.1f", velocityMs)}m/s)"
+                context.getString(R.string.imu_warn_move_both, maxRotDeg, velocityMs)
             maxRotDeg > MAX_ROTATION_DEG ->
-                "⚠️ 设备旋转过大 (${String.format("%.1f", maxRotDeg)}°)"
+                context.getString(R.string.imu_warn_rotate, maxRotDeg)
             velocityMs > MAX_VELOCITY_MS ->
-                "⚠️ 设备平移过大 (${String.format("%.1f", velocityMs)}m/s)"
+                context.getString(R.string.imu_warn_translate, velocityMs)
             maxRotDeg > ROTATION_NOISE_FLOOR_DEG * 2 ->
-                "⚡ 轻微晃动 (${String.format("%.1f", maxRotDeg)}°)"
+                context.getString(R.string.imu_warn_slight, maxRotDeg)
             else -> null
         }
 
