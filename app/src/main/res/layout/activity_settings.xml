@@ -14,7 +14,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="设置"
+            android:text="@string/settings_title"
             android:textColor="#FFFFFF"
             android:textSize="28sp"
             android:textStyle="bold"
@@ -24,7 +24,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="默认单位"
+            android:text="@string/settings_default_unit"
             android:textColor="#AAAAAA"
             android:textSize="14sp"
             android:layout_marginBottom="8dp" />
@@ -35,9 +35,9 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:layout_marginBottom="24dp">
-            <RadioButton android:id="@+id/rbCm" android:text="厘米" android:textColor="#FFFFFF" android:layout_marginEnd="24dp" />
-            <RadioButton android:id="@+id/rbInch" android:text="英寸" android:textColor="#FFFFFF" android:layout_marginEnd="24dp" />
-            <RadioButton android:id="@+id/rbM" android:text="米" android:textColor="#FFFFFF" />
+            <RadioButton android:id="@+id/rbCm" android:text="@string/unit_label_cm" android:textColor="#FFFFFF" android:layout_marginEnd="24dp" />
+            <RadioButton android:id="@+id/rbInch" android:text="@string/unit_label_inch" android:textColor="#FFFFFF" android:layout_marginEnd="24dp" />
+            <RadioButton android:id="@+id/rbM" android:text="@string/unit_label_m" android:textColor="#FFFFFF" />
         </RadioGroup>
 
         <!-- Show Uncertainty -->
@@ -51,7 +51,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="显示精度范围 (±)"
+                android:text="@string/settings_show_uncertainty"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp" />
             <Switch
@@ -71,7 +71,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="触觉反馈"
+                android:text="@string/settings_haptic"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp" />
             <Switch
@@ -91,7 +91,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="深度摄像头"
+                android:text="@string/settings_depth_camera"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp" />
             <Switch
@@ -106,7 +106,7 @@
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="传感器校准"
+            android:text="@string/settings_calibrate"
             android:textColor="#00FF88"
             android:layout_marginBottom="8dp"
             android:strokeColor="#00FF88" />
@@ -128,7 +128,7 @@
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="清空所有历史记录"
+            android:text="@string/settings_clear_history"
             android:textColor="#FF4444"
             android:layout_marginBottom="24dp"
             android:strokeColor="#FF4444" />
@@ -137,7 +137,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="AR测距 v1.1"
+            android:text="@string/settings_about"
             android:textColor="#666666"
             android:textSize="12sp"
             android:layout_gravity="center" />

@@ -44,10 +44,10 @@ class HistoryActivity : AppCompatActivity() {
             }
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, "AR测距记录\n\n$text")
-                putExtra(Intent.EXTRA_SUBJECT, "AR测距记录")
+                putExtra(Intent.EXTRA_TEXT, getString(R.string.history_export_subject) + "\n\n$text")
+                putExtra(Intent.EXTRA_SUBJECT, getString(R.string.history_export_subject))
             }
-            startActivity(Intent.createChooser(intent, "导出记录"))
+            startActivity(Intent.createChooser(intent, getString(R.string.history_export_chooser)))
         }
     }
 
@@ -66,6 +66,7 @@ class HistoryActivity : AppCompatActivity() {
             holder.binding.tvResult.text = e.result
             holder.binding.tvMode.text = e.mode
             holder.binding.tvTime.text = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(e.timestamp))
+            // 这些键与 saveToHistory 写入的模式字符串对应（历史数据值，非展示文案）
             holder.binding.tvModeIcon.text = when (e.mode) {
                 "单点" -> "⊙"
                 "两点", "测距" -> "↔"

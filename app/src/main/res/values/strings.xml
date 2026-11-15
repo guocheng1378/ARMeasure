@@ -79,6 +79,21 @@
     <string name="sensor_main_camera">主摄</string>
 
     <!-- Settings page -->
+    <string name="settings_title">设置</string>
+    <string name="settings_default_unit">默认单位</string>
+    <string name="settings_show_uncertainty">显示精度范围 (±)</string>
+    <string name="settings_haptic">触觉反馈</string>
+    <string name="settings_depth_camera">深度摄像头</string>
+    <string name="settings_calibrate">传感器校准</string>
+    <string name="settings_clear_history">清空所有历史记录</string>
     <string name="settings_show_tutorial">重新显示教程</string>
     <string name="settings_tutorial_reset_done">已重置，返回主界面即可看到教程</string>
+    <string name="settings_about">AR测距 v1.1</string>
+
+    <!-- History page -->
+    <string name="history_title">测量记录</string>
+    <string name="history_back">返回</string>
+    <string name="history_export">导出</string>
+    <string name="history_export_chooser">导出记录</string>
+    <string name="history_export_subject">AR测距记录</string>
 </resources>
