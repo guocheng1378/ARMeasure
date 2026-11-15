@@ -72,12 +72,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     data class HistoryEntry(val timestamp: Long, val mode: String, val result: String, val unit: String)
     private var currentMode = Mode.POINT
     @Volatile private var cameraOpening = false
+    /** True while a calibration sample collection is in flight — blocks extra taps
+     *  from stacking multiple sampling dialogs (see onScreenTapped). */
+    private var calibrationSampling = false
 
     private val overlayPoints = mutableListOf<PointF>()
     private val overlayAreaPoints = mutableListOf<PointF>()
     private val heightPoints = mutableListOf<PointF>()
     private val anglePoints = mutableListOf<PointF>()
-    private var angleDepths = mutableListOf<Float>()
     /** Gyro rotation matrix from the vertex tap to arm1 (tap 2) */
     private var angleRotation1: FloatArray? = null
     /** Gyro rotation matrix from arm1 (tap 2) to arm2 (tap 3) */
@@ -132,8 +134,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val sm = getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
         cameraCtrl = CameraController(this, cm, backgroundHandler, binding.surfaceView)
-        tofHelper = TofSensorHelper(sm)
-        imuHelper = ImuFusionHelper(sm)
+        tofHelper = TofSensorHelper(this, sm)
+        imuHelper = ImuFusionHelper(this, sm)
         binding.overlayView.onTap = { x, y -> onScreenTapped(x, y) }
         // Line mode: no finger tracking — second point is at screen center (Apple style)
         binding.overlayView.onMove = { x, y ->
@@ -198,7 +200,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         hapticsEnabled = prefs.getBoolean("haptic", true)
         showUncertainty = prefs.getBoolean("show_uncertainty", true)
         val depthEnabled = prefs.getBoolean("depth_enabled", false)
-        if (depthEnabled != cameraCtrl.depthCameraEnabled) toggleDepthCamera()
+        // 相机尚未枚举时先不切换：等 startCamera 选好摄像头后在 onReady 里补齐，
+        // 否则首次启动会误报「设备无深度摄像头」
+        if (depthEnabled != cameraCtrl.depthCameraEnabled && cameraCtrl.hasSelected) toggleDepthCamera()
     }
 
     override fun onPause() {
@@ -286,6 +290,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         cameraCtrl.openCamera(selection, onReady = { same ->
             cameraOpening = false
             updateSensorLabel()
+            // 摄像头枚举完成后，若设置里的深度开关与当前状态不一致（如首次启动即开启），补一次切换
+            val prefs = getSharedPreferences(AppConstants.SETTINGS_PREF, MODE_PRIVATE)
+            if (prefs.getBoolean("depth_enabled", false) != cameraCtrl.depthCameraEnabled) toggleDepthCamera()
         }, onError = { cameraOpening = false })
     }
 
@@ -514,7 +521,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.triggerRipple(x, y)
         triggerAutoFocus(x, y); haptic()
         val settleMs = if (cameraCtrl.hasDepthMap && cameraCtrl.depthCameraEnabled) AppConstants.SETTLE_MS_DEPTH else AppConstants.SETTLE_MS_AF
-        if (calibrating) { backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, settleMs); return }
+        if (calibrating) {
+            // 校准采样进行中：忽略额外点击，避免叠开多个采样对话框
+            if (calibrationSampling) return
+            calibrationSampling = true
+            backgroundHandler?.postDelayed({ runOnUiThread { performCalibration(x, y) } }, settleMs)
+            return
+        }
         backgroundHandler?.postDelayed({ runOnUiThread { measureAtPoint(x, y) } }, settleMs)
     }
 
@@ -529,14 +542,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             runOnUiThread {
                 if (dist != null && dist > 0) {
                     binding.overlayView.sweepDistanceCm = dist
-                    binding.overlayView.updateSweepText(String.format("%.1f cm", dist))
+                    // 读数跟随单位设置（此前写死 cm，切换英寸/米后浮层仍显示厘米）
+                    binding.overlayView.updateSweepText(formatDistance(dist))
                     synchronized(sweepLock) {
                         sweepHistory.add(Pair(x, dist))
                         while (sweepHistory.size > maxSweepHistory) sweepHistory.removeAt(0)
                         binding.overlayView.sweepHistory = sweepHistory.toList()
                     }
                     binding.tvDistance.text = formatDistance(dist)
-                } else { binding.overlayView.sweepDistanceCm = -1f; binding.tvDistance.text = "扫描中..." }
+                } else { binding.overlayView.sweepDistanceCm = -1f; binding.tvDistance.text = getString(R.string.sweep_scanning) }
                 binding.overlayView.invalidate()
             }
         }
@@ -602,7 +616,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 binding.progressBar.visibility = android.view.View.GONE
                 measuredResult = when {
                     dist != null -> formatDistance(dist) + uncStr
-                    tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} (近)"
+                    tofHelper.tofDistanceMm > 0 -> "~${formatDistance(tofHelper.tofDistanceMm / 10f)} ${getString(R.string.text_near_suffix)}"
                     else -> getString(R.string.focus_error)
                 }
                 binding.tvDistance.text = measuredResult; updateOverlay()
@@ -760,7 +774,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.overlayView.animateNewPoint()
         if (overlayAreaPoints.size >= 3) {
             val area = computeArea(overlayAreaPoints, depthCache)
-            measuredResult = if (area > 0) formatArea(area) else "无法计算"
+            measuredResult = if (area > 0) formatArea(area) else getString(R.string.err_area_uncalculable)
             binding.tvDistance.text = measuredResult
             // Save history once per polygon (at first closure), not on every
             // extra tap that merely re-computes the same area
@@ -778,6 +792,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun handleHeightTap(x: Float, y: Float) {
+        // 两点采样进行中：忽略额外点击，避免采样等待期点出游离点（与两点模式同款守卫）
+        if (heightPoints.size >= 2) return
         heightPoints.add(PointF(x, y))
         binding.overlayView.triggerPulse(x, y)
         haptic()
@@ -864,6 +880,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
     }
 
     private fun handleAngleTap(x: Float, y: Float) {
+        // 三点采样进行中：忽略额外点击，避免采样等待期点出游离点（与两点模式同款守卫）
+        if (anglePoints.size >= 3) return
         anglePoints.add(PointF(x, y))
         binding.overlayView.triggerPulse(x, y)
         haptic()
@@ -1041,7 +1059,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.overlayView.lineConfirmed = false
             binding.overlayView.lineExpandProgress = 1f
         }
-        currentMode = mode; calibrating = false
+        currentMode = mode; calibrating = false; calibrationSampling = false
         // 模式提示文案走资源，保证与 overlay 教程/提示一致
         binding.tvMode.text = when (mode) {
             Mode.POINT -> getString(R.string.mode_hint_point); Mode.LINE -> getString(R.string.mode_hint_line)
@@ -1074,7 +1092,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
 
     private fun resetMeasurement() {
         overlayPoints.clear(); overlayAreaPoints.clear(); sweepHistory.clear(); firstPoint = null
-        heightPoints.clear(); anglePoints.clear(); angleDepths.clear()
+        heightPoints.clear(); anglePoints.clear()
         // 复位各模式的中间状态：面积去重标记、线采样竞态守卫、角度帧间旋转缓存
         areaHistorySaved = false; firstSamplingDone = false
         angleRotation1 = null; angleRotation2 = null
@@ -1082,7 +1100,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         binding.surfaceView.scaleX = 1f; binding.surfaceView.scaleY = 1f
         zoomScale = 1f
         synchronized(depthCacheLock) { depthCache.clear() }
-        calibrating = false; lastRawCm = -1f; firstUncertainty = 0f
+        calibrating = false; calibrationSampling = false; lastRawCm = -1f; firstUncertainty = 0f
         measuredResult = "--"; binding.tvDistance.text = "--"
         binding.progressBar.visibility = android.view.View.GONE
         binding.overlayView.points = emptyList(); binding.overlayView.lines = emptyList()
@@ -1110,7 +1128,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 val loc = IntArray(2); sv.getLocationInWindow(loc)
                 android.view.PixelCopy.request(window, Rect(loc[0], loc[1], loc[0]+sv.width, loc[1]+sv.height), bitmap,
                     { r ->
-                        if (r == android.view.PixelCopy.SUCCESS) { val c = Canvas(bitmap); binding.overlayView.draw(c); saveBitmapToGallery(bitmap) }
+                        // PixelCopy 抓的是整个窗口，测量覆盖层已包含在内；
+                        // 不得再 draw 一遍，否则线条/读数叠影加深
+                        if (r == android.view.PixelCopy.SUCCESS) saveBitmapToGallery(bitmap)
                         else { saveBitmapFallback() }
                     }, Handler(mainLooper))
             } else { saveBitmapFallback() }
@@ -1126,7 +1146,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             binding.overlayView.draw(c)
             saveBitmapToGallery(bitmap)
         } catch (e: Exception) {
-            runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+            runOnUiThread { Toast.makeText(this, getString(R.string.err_save_failed, e.message), Toast.LENGTH_SHORT).show() }
         }
     }
 
@@ -1147,33 +1167,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                     contentResolver.update(uri, values, null, null)
                     // Share intent
                     runOnUiThread {
-                        Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, getString(R.string.save_done, measuredResult), Toast.LENGTH_SHORT).show()
                         showShareOption(uri)
                     }
                 }
             } else {
                 @Suppress("DEPRECATION")
                 val path = android.provider.MediaStore.Images.Media.insertImage(contentResolver, bitmap, displayName, "Distance: $measuredResult")
-                runOnUiThread { Toast.makeText(this, "已保存: $measuredResult", Toast.LENGTH_SHORT).show() }
+                runOnUiThread { Toast.makeText(this, getString(R.string.save_done, measuredResult), Toast.LENGTH_SHORT).show() }
             }
         } catch (e: Exception) {
-            runOnUiThread { Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show() }
+            runOnUiThread { Toast.makeText(this, getString(R.string.err_save_failed, e.message), Toast.LENGTH_SHORT).show() }
         }
     }
 
     private fun showShareOption(uri: android.net.Uri) {
         android.app.AlertDialog.Builder(this)
-            .setTitle("分享测量结果？")
-            .setPositiveButton("分享") { _, _ ->
+            .setTitle(R.string.share_dialog_title)
+            .setPositiveButton(R.string.share_dialog_ok) { _, _ ->
                 val intent = Intent(Intent.ACTION_SEND).apply {
                     type = "image/png"
                     putExtra(Intent.EXTRA_STREAM, uri)
-                    putExtra(Intent.EXTRA_TEXT, "AR测距结果: $measuredResult")
+                    putExtra(Intent.EXTRA_TEXT, getString(R.string.share_text, measuredResult))
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                startActivity(Intent.createChooser(intent, "分享测量结果"))
+                startActivity(Intent.createChooser(intent, getString(R.string.share_chooser_title)))
             }
-            .setNegativeButton("关闭", null)
+            .setNegativeButton(R.string.share_dialog_cancel, null)
             .show()
     }
 
@@ -1191,9 +1211,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
                 if (overlayAreaPoints.isNotEmpty()) {
                     overlayAreaPoints.removeAt(overlayAreaPoints.size - 1)
                     synchronized(depthCacheLock) { depthCache.remove(overlayAreaPoints.size) }
+                    // 多边形已改变：面积回落到 3 点以下时重置去重标记，
+                    // 重新补点闭合后才能再次写入历史
+                    if (overlayAreaPoints.size < 3) areaHistorySaved = false
                     if (overlayAreaPoints.size >= 3) {
                         val a = computeArea(overlayAreaPoints, depthCache)
-                        measuredResult = if (a > 0) formatArea(a) else "无法计算"
+                        measuredResult = if (a > 0) formatArea(a) else getString(R.string.err_area_uncalculable)
                         binding.tvDistance.text = measuredResult
                     } else {
                         measuredResult = if (overlayAreaPoints.isEmpty()) "--"
@@ -1263,24 +1286,31 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
         ) { result ->
             val measured = result?.depthCm
             runOnUiThread {
-                if (measured == null || measured <= 0) { Toast.makeText(this, "无法获取距离，请重试", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
+                if (measured == null || measured <= 0) {
+                    Toast.makeText(this, R.string.err_calibration_no_distance, Toast.LENGTH_SHORT).show()
+                    calibrationSampling = false
+                    return@runOnUiThread
+                }
                 val input = android.widget.EditText(this).apply {
                     inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-                    hint = "已知距离 (cm)"; setText(String.format("%.0f", measured))
+                    hint = getString(R.string.calibration_hint_known_cm); setText(String.format("%.0f", measured))
                 }
                 android.app.AlertDialog.Builder(this)
-                    .setTitle("校准: 当前测量 ${String.format("%.1f cm", measured)}")
-                    .setMessage("输入实际距离 (cm) 进行校准\n(已取${AppConstants.CALIBRATION_SAMPLE_COUNT}次采样中位数)")
+                    .setTitle(getString(R.string.calibration_dialog_title, String.format("%.1f cm", measured)))
+                    .setMessage(getString(R.string.calibration_dialog_message, AppConstants.CALIBRATION_SAMPLE_COUNT))
                     .setView(input)
-                    .setPositiveButton("校准") { _, _ ->
+                    .setPositiveButton(R.string.calibration) { _, _ ->
                         val known = input.text.toString().toFloatOrNull()
                         if (known != null && known > 0) {
                             calibrationFactor = known / measured; isCalibrated = true; calibrating = false
                             saveCalibration(); updateCalibrationUI(); setMode(currentMode)
-                            Toast.makeText(this, "校准完成 (x${String.format("%.3f", calibrationFactor)})", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, getString(R.string.calibration_done, String.format("%.3f", calibrationFactor)), Toast.LENGTH_SHORT).show()
                         }
+                        calibrationSampling = false
                     }
-                    .setNegativeButton("取消") { _, _ -> calibrating = false; updateCalibrationUI(); setMode(currentMode) }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> calibrating = false; calibrationSampling = false; updateCalibrationUI(); setMode(currentMode) }
+                    // 系统返回键关闭对话框同样要复位标记，否则后续点击会被吞掉
+                    .setOnCancelListener { calibrationSampling = false }
                     .show()
             }
         }
@@ -1320,17 +1350,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, SurfaceHolder.Cal
             measurementHistory.clear()
             for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); measurementHistory.add(HistoryEntry(o.getLong("t"), o.getString("m"), o.getString("r"), o.getString("u"))) }
         } catch (_: Exception) { measurementHistory.clear() }
-    }
-    private fun showHistory() {
-        if (measurementHistory.isEmpty()) { Toast.makeText(this, "暂无测量记录", Toast.LENGTH_SHORT).show(); return }
-        val items = measurementHistory.map { e ->
-            val time = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(e.timestamp))
-            "$time  [${e.mode}]  ${e.result}"
-        }.toTypedArray()
-        android.app.AlertDialog.Builder(this)
-            .setTitle("测量记录 (${measurementHistory.size})").setItems(items, null)
-            .setNeutralButton("清空") { _, _ -> measurementHistory.clear(); persistHistory(); Toast.makeText(this, "已清空", Toast.LENGTH_SHORT).show() }
-            .setNegativeButton("关闭", null).show()
     }
 
     // ── JSON helpers ─────────────────────────────────────────

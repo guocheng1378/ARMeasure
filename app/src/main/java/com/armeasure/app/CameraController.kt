@@ -70,6 +70,11 @@ class CameraController(
     var depthCameraEnabled: Boolean = false
     var hasSeparateDepthCamera: Boolean = false
         private set
+    /** True once selectCameras() has run this session. Settings must not toggle
+     *  the depth camera before enumeration, or the "no depth camera" toast
+     *  fires wrongly on first launch. */
+    var hasSelected: Boolean = false
+        private set
     private var lastSelection: CameraSelection? = null
 
     var torchOn: Boolean = false
@@ -174,6 +179,7 @@ class CameraController(
         hasDepthMap = depthCamId != null
         hasSeparateDepthCamera = depthCamId != null && depthCamId != rgbId
         lastSelection = CameraSelection(rgbId, depthCamId, depthCamId == rgbId)
+        hasSelected = true
         return lastSelection
     }
 
